@@ -1,0 +1,123 @@
+// index.js
+require('dotenv').config();
+const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const liveRoutes = require('./live');
+
+const logger = require('./utils/logger');
+const apiRoutes = require('./api/routes');
+const { initDatabase } = require('./db/init');
+const scheduler = require('./jobs/scheduler');
+// In api/routes/index.js, add:
+const corporateActionsRoutes = require('./corporateActions');
+
+router.use('/corporate', corporateActionsRoutes);
+router.use('/live', liveRoutes);
+class Application {
+  constructor() {
+    this.app = express();
+    this.port = process.env.API_PORT || 3000;
+  }
+
+  async initialize() {
+    try {
+      // Initialize database
+      await initDatabase();
+      logger.info('Database initialized');
+
+      // Setup middleware
+      this.setupMiddleware();
+      
+      // Setup routes
+      this.setupRoutes();
+      
+      // Setup error handling
+      this.setupErrorHandling();
+      
+      // Start cron jobs in production
+      if (process.env.NODE_ENV === 'production') {
+        scheduler.start();
+        logger.info('Scheduler started');
+      }
+      
+      logger.info('Application initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize application:', error);
+      process.exit(1);
+    }
+  }
+
+  setupMiddleware() {
+    // Security
+    this.app.use(helmet());
+    this.app.use(cors());
+    this.app.use(compression());
+    
+    // Rate limiting
+    const limiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 100 // limit each IP to 100 requests per windowMs
+    });
+    this.app.use('/api', limiter);
+    
+    // Body parsing
+    this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: true }));
+    
+    // Logging
+    this.app.use((req, res, next) => {
+      logger.info(`${req.method} ${req.url}`);
+      next();
+    });
+  }
+
+  setupRoutes() {
+    this.app.use('/api', apiRoutes);
+    
+    // Health check
+    this.app.get('/health', (req, res) => {
+      res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+      });
+    });
+  }
+
+  setupErrorHandling() {
+    // 404 handler
+    this.app.use((req, res) => {
+      res.status(404).json({ error: 'Route not found' });
+    });
+    
+    // Global error handler
+    this.app.use((err, req, res, next) => {
+      logger.error('Unhandled error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    });
+  }
+
+  start() {
+    this.app.listen(this.port, () => {
+      logger.info(`Server running on port ${this.port}`);
+      logger.info(`Environment: ${process.env.NODE_ENV}`);
+      logger.info(`Timezone: ${process.env.TIMEZONE}`);
+    });
+  }
+}
+
+// Start application
+if (require.main === module) {
+  const app = new Application();
+  app.initialize().then(() => {
+    app.start();
+  }).catch(error => {
+    logger.error('Failed to start application:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = Application;

@@ -270,11 +270,18 @@ app.get('/api/companies/search', async (req, res) => {
         company.d.toUpperCase().includes(searchTerm)
       )
       .slice(0, limit)
-      .map(company => ({
-        symbol: company.d,
-        name: company.l,
-        id: company.v
-      }));
+      .map(company => {
+        let fullName = company.l;
+        const nameMatch = company.l.match(/\(([^)]+)\)/);
+        if (nameMatch) {
+          fullName = nameMatch[1];
+        }
+        return {
+          symbol: company.d,
+          name: fullName,
+          id: company.v
+        };
+      });
     
     res.json({
       success: true,
@@ -311,11 +318,18 @@ app.get('/api/companies/all', async (req, res) => {
       }
     );
     
-    const companies = response.data.map(company => ({
-      symbol: company.d,
-      name: company.l,
-      id: company.v
-    }));
+    const companies = response.data.map(company => {
+      let fullName = company.l;
+      const nameMatch = company.l.match(/\(([^)]+)\)/);
+      if (nameMatch) {
+        fullName = nameMatch[1];
+      }
+      return {
+        symbol: company.d,
+        name: fullName,
+        id: company.v
+      };
+    });
     
     const result = {
       success: true,
@@ -357,6 +371,12 @@ app.get('/api/company/:symbol', async (req, res) => {
       return res.status(404).json({ error: 'Company not found' });
     }
     
+    let fullName = companyInfo.l;
+    const nameMatch = companyInfo.l.match(/\(([^)]+)\)/);
+    if (nameMatch) {
+      fullName = nameMatch[1];
+    }
+    
     const marketResponse = await axios.get(
       'https://www.merolagani.com/handlers/webrequesthandler.ashx?type=market_summary',
       {
@@ -376,7 +396,7 @@ app.get('/api/company/:symbol', async (req, res) => {
       success: true,
       data: {
         symbol: companyInfo.d,
-        name: companyInfo.l,
+        name: fullName,
         id: companyInfo.v,
         market_data: stockData || null,
         last_updated: new Date().toISOString()
@@ -433,9 +453,14 @@ app.post('/api/companies/batch', async (req, res) => {
       );
       
       if (companyInfo) {
+        let fullName = companyInfo.l;
+        const nameMatch = companyInfo.l.match(/\(([^)]+)\)/);
+        if (nameMatch) {
+          fullName = nameMatch[1];
+        }
         results.push({
           symbol: companyInfo.d,
-          name: companyInfo.l,
+          name: fullName,
           id: companyInfo.v,
           market_data: stockData || null
         });
@@ -482,7 +507,6 @@ app.get('/api/events', async (req, res) => {
   try {
     const { from, to, type, symbol, limit = 100 } = req.query;
     
-    // Default to current month if no dates provided
     const now = new Date();
     const fromDate = from || `${now.getMonth() + 1}/1/${now.getFullYear()}`;
     const toDate = to || `${now.getMonth() + 2}/0/${now.getFullYear()}`;
@@ -491,14 +515,13 @@ app.get('/api/events', async (req, res) => {
     const cached = cache.get(cacheKey);
     
     let events;
-    if (cached && Date.now() - cached.timestamp < 3600000) { // 1 hour cache
+    if (cached && Date.now() - cached.timestamp < 3600000) {
       events = cached.data;
     } else {
       events = await fetchStockEvents(fromDate, toDate);
       cache.set(cacheKey, { data: events, timestamp: Date.now() });
     }
     
-    // Filter by event type (case-insensitive)
     if (type) {
       const typeLower = type.toLowerCase();
       events = events.filter(event => 
@@ -506,7 +529,6 @@ app.get('/api/events', async (req, res) => {
       );
     }
     
-    // Filter by symbol (case-insensitive)
     if (symbol) {
       const symbolUpper = symbol.toUpperCase();
       events = events.filter(event => 
@@ -514,7 +536,6 @@ app.get('/api/events', async (req, res) => {
       );
     }
     
-    // Apply limit
     events = events.slice(0, parseInt(limit));
     
     res.json({
@@ -649,7 +670,6 @@ app.get('/api/events/right-share', async (req, res) => {
     
     const rightShareEvents = events
       .filter(event => 
-        event.announcementDetail.toLowerCase().includes('right share') ||
         event.announcementDetail.toLowerCase().includes('right share')
       )
       .slice(0, parseInt(limit))
@@ -727,7 +747,6 @@ app.get('/api/events/stats', async (req, res) => {
       by_month: {}
     };
     
-    // Group by month
     events.forEach(event => {
       const month = event.actionDate.split('/')[1];
       if (!stats.by_month[month]) {
@@ -749,7 +768,87 @@ app.get('/api/events/stats', async (req, res) => {
   }
 });
 
-// Health check endpoint
+// ============ HISTORICAL CANDLES ENDPOINT ============
+// Get historical OHLC data
+app.get('/api/candles/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { period = '1y' } = req.query;
+    
+    // Calculate date range based on period
+    const endDate = new Date();
+    const startDate = new Date();
+    
+    switch(period) {
+      case '1w': startDate.setDate(startDate.getDate() - 7); break;
+      case '2w': startDate.setDate(startDate.getDate() - 14); break;
+      case '1m': startDate.setMonth(startDate.getMonth() - 1); break;
+      case '3m': startDate.setMonth(startDate.getMonth() - 3); break;
+      case '6m': startDate.setMonth(startDate.getMonth() - 6); break;
+      case '1y': startDate.setFullYear(startDate.getFullYear() - 1); break;
+      case '2y': startDate.setFullYear(startDate.getFullYear() - 2); break;
+      case '3y': startDate.setFullYear(startDate.getFullYear() - 3); break;
+      case '5y': startDate.setFullYear(startDate.getFullYear() - 5); break;
+      default: startDate.setFullYear(startDate.getFullYear() - 1);
+    }
+    
+    // Convert to Unix timestamps
+    const rangeStartDate = Math.floor(startDate.getTime() / 1000);
+    const rangeEndDate = Math.floor(endDate.getTime() / 1000);
+    
+    console.log(`Fetching candles for ${symbol} from ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+    
+    const response = await axios.get(
+      'https://www.merolagani.com/handlers/TechnicalChartHandler.ashx',
+      {
+        params: {
+          type: 'get_advanced_chart',
+          symbol: symbol.toUpperCase(),
+          resolution: '1D',
+          rangeStartDate: rangeStartDate,
+          rangeEndDate: rangeEndDate,
+          isAdjust: 1,
+          currencyCode: 'NPR'
+        },
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Accept': 'application/json'
+        }
+      }
+    );
+    
+    // Format the response
+    const candles = [];
+    if (response.data && response.data.s === 'ok') {
+      for (let i = 0; i < response.data.t.length; i++) {
+        candles.push({
+          date: new Date(response.data.t[i] * 1000).toISOString().split('T')[0],
+          open: response.data.o[i],
+          high: response.data.h[i],
+          low: response.data.l[i],
+          close: response.data.c[i],
+          volume: response.data.v[i]
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      period: period,
+      count: candles.length,
+      data: candles,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching candles:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ HEALTH & ROOT ============
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
@@ -796,12 +895,16 @@ app.get('/', (req, res) => {
         byCompany: 'GET /api/events/company/:symbol',
         stats: 'GET /api/events/stats'
       },
+      candles: {
+        historical: 'GET /api/candles/:symbol?period=1y'
+      },
       health: 'GET /health'
     },
     timestamp: new Date().toISOString()
   });
 });
 
+// ============ ERROR HANDLING (MUST BE LAST) ============
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
@@ -812,7 +915,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// 404 handler - MUST BE THE LAST app.use
 app.use((req, res) => {
   res.status(404).json({
     error: 'Endpoint not found',
@@ -821,7 +924,7 @@ app.use((req, res) => {
   });
 });
 
-// Start server
+// ============ START SERVER ============
 const server = app.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
@@ -835,112 +938,13 @@ const server = app.listen(PORT, () => {
 🏥 Health: http://localhost:${PORT}/health
 📈 Market Summary: http://localhost:${PORT}/api/market/summary
 📅 Events: http://localhost:${PORT}/api/events
-
-✨ Available Endpoints:
-   📊 MARKET DATA:
-      • GET /api/market/summary    - Complete market data
-      • GET /api/market/overall    - Overall statistics
-      • GET /api/market/turnover   - Top turnover leaders
-      • GET /api/market/sectors    - Sector-wise performance
-      • GET /api/market/brokers    - Broker-wise performance
-      • GET /api/market/gainers    - Top gainers
-      • GET /api/market/losers     - Top losers
-      • GET /api/market/active     - Most active stocks
-
-   📈 STOCKS:
-      • GET /api/stocks            - All stocks data
-      • GET /api/stock/:symbol     - Specific stock data
-
-   🏢 COMPANIES:
-      • GET /api/companies/search  - Search companies
-      • GET /api/companies/all     - All companies list
-      • GET /api/company/:symbol   - Company details with market data
-      • POST /api/companies/batch  - Batch company details
-
-   📅 CORPORATE EVENTS:
-      • GET /api/events            - All events (with date filters)
-      • GET /api/events/ipo        - IPO announcements
-      • GET /api/events/dividends  - Dividend & bonus announcements
-      • GET /api/events/agm        - AGM notices
-      • GET /api/events/right-share - Right share announcements
-      • GET /api/events/company/:symbol - Events by company
-      • GET /api/events/stats      - Event statistics
+📊 Candles: http://localhost:${PORT}/api/candles/NABIL?period=1y
 
 💡 Quick Test:
    curl http://localhost:${PORT}/api/market/summary
    curl http://localhost:${PORT}/api/companies/search?q=NABIL
-   curl "http://localhost:${PORT}/api/events?from=6/1/2026&to=6/30/2026&type=IPO"
+   curl "http://localhost:${PORT}/api/candles/NABIL?period=1m"
   `);
 });
-// Add to index.js - Historical Candles Endpoint
 
-// Get historical OHLC data
-app.get('/api/candles/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { period = '1y' } = req.query;
-    
-    // Calculate date range based on period
-    const endDate = new Date();
-    const startDate = new Date();
-    
-    switch(period) {
-      case '1m': startDate.setMonth(startDate.getMonth() - 1); break;
-      case '3m': startDate.setMonth(startDate.getMonth() - 3); break;
-      case '6m': startDate.setMonth(startDate.getMonth() - 6); break;
-      case '1y': startDate.setFullYear(startDate.getFullYear() - 1); break;
-      case '3y': startDate.setFullYear(startDate.getFullYear() - 3); break;
-      case '5y': startDate.setFullYear(startDate.getFullYear() - 5); break;
-      default: startDate.setFullYear(startDate.getFullYear() - 1);
-    }
-    
-    // Convert to Unix timestamps
-    const rangeStartDate = Math.floor(startDate.getTime() / 1000);
-    const rangeEndDate = Math.floor(endDate.getTime() / 1000);
-    
-    const response = await axios.get(
-      'https://www.merolagani.com/handlers/TechnicalChartHandler.ashx',
-      {
-        params: {
-          type: 'get_advanced_chart',
-          symbol: symbol.toUpperCase(),
-          resolution: '1D',
-          rangeStartDate: rangeStartDate,
-          rangeEndDate: rangeEndDate,
-          isAdjust: 1,
-          currencyCode: 'NPR'
-        },
-        timeout: 10000
-      }
-    );
-    
-    // Format the response
-    const candles = [];
-    if (response.data.s === 'ok') {
-      for (let i = 0; i < response.data.t.length; i++) {
-        candles.push({
-          date: new Date(response.data.t[i] * 1000).toISOString().split('T')[0],
-          open: response.data.o[i],
-          high: response.data.h[i],
-          low: response.data.l[i],
-          close: response.data.c[i],
-          volume: response.data.v[i]
-        });
-      }
-    }
-    
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      period: period,
-      count: candles.length,
-      data: candles,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Error fetching candles:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
 module.exports = app;

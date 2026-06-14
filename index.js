@@ -21,6 +21,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// Helper function to calculate start date based on period
+function getStartDate(period) {
+  const date = new Date();
+  switch(period) {
+    case '1w': date.setDate(date.getDate() - 7); break;
+    case '2w': date.setDate(date.getDate() - 14); break;
+    case '1m': date.setMonth(date.getMonth() - 1); break;
+    case '3m': date.setMonth(date.getMonth() - 3); break;
+    case '6m': date.setMonth(date.getMonth() - 6); break;
+    case '1y': date.setFullYear(date.getFullYear() - 1); break;
+    case '2y': date.setFullYear(date.getFullYear() - 2); break;
+    case '3y': date.setFullYear(date.getFullYear() - 3); break;
+    case '5y': date.setFullYear(date.getFullYear() - 5); break;
+    default: date.setFullYear(date.getFullYear() - 1);
+  }
+  return date;
+}
+
 // ============ MARKET SUMMARY ENDPOINTS ============
 
 // Get complete market summary
@@ -768,8 +786,9 @@ app.get('/api/events/stats', async (req, res) => {
   }
 });
 
-// ============ HISTORICAL CANDLES ENDPOINT ============
-// Get historical OHLC data
+// ============ HISTORICAL CANDLES ENDPOINTS ============
+
+// Get historical OHLC data (single symbol)
 app.get('/api/candles/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -777,20 +796,7 @@ app.get('/api/candles/:symbol', async (req, res) => {
     
     // Calculate date range based on period
     const endDate = new Date();
-    const startDate = new Date();
-    
-    switch(period) {
-      case '1w': startDate.setDate(startDate.getDate() - 7); break;
-      case '2w': startDate.setDate(startDate.getDate() - 14); break;
-      case '1m': startDate.setMonth(startDate.getMonth() - 1); break;
-      case '3m': startDate.setMonth(startDate.getMonth() - 3); break;
-      case '6m': startDate.setMonth(startDate.getMonth() - 6); break;
-      case '1y': startDate.setFullYear(startDate.getFullYear() - 1); break;
-      case '2y': startDate.setFullYear(startDate.getFullYear() - 2); break;
-      case '3y': startDate.setFullYear(startDate.getFullYear() - 3); break;
-      case '5y': startDate.setFullYear(startDate.getFullYear() - 5); break;
-      default: startDate.setFullYear(startDate.getFullYear() - 1);
-    }
+    const startDate = getStartDate(period);
     
     // Convert to Unix timestamps
     const rangeStartDate = Math.floor(startDate.getTime() / 1000);
@@ -848,6 +854,103 @@ app.get('/api/candles/:symbol', async (req, res) => {
   }
 });
 
+// Get candles for multiple symbols at once (BULK endpoint)
+app.post('/api/candles/bulk', async (req, res) => {
+  try {
+    const { symbols, period = '1y' } = req.body;
+    
+    if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+      return res.status(400).json({ 
+        error: 'Symbols array required',
+        example: { symbols: ['NABIL', 'EBL', 'PRVU'], period: '1m' }
+      });
+    }
+    
+    // Limit to 50 symbols per request for performance
+    if (symbols.length > 50) {
+      return res.status(400).json({ error: 'Maximum 50 symbols per request' });
+    }
+    
+    const results = [];
+    let successCount = 0;
+    
+    for (const symbol of symbols) {
+      try {
+        const startDate = getStartDate(period);
+        const endDate = new Date();
+        
+        const response = await axios.get(
+          'https://www.merolagani.com/handlers/TechnicalChartHandler.ashx',
+          {
+            params: {
+              type: 'get_advanced_chart',
+              symbol: symbol.toUpperCase(),
+              resolution: '1D',
+              rangeStartDate: Math.floor(startDate.getTime() / 1000),
+              rangeEndDate: Math.floor(endDate.getTime() / 1000),
+              isAdjust: 1,
+              currencyCode: 'NPR'
+            },
+            timeout: 15000,
+            headers: {
+              'User-Agent': 'Mozilla/5.0',
+              'Accept': 'application/json'
+            }
+          }
+        );
+        
+        const candles = [];
+        if (response.data && response.data.s === 'ok') {
+          for (let i = 0; i < response.data.t.length; i++) {
+            candles.push({
+              date: new Date(response.data.t[i] * 1000).toISOString().split('T')[0],
+              open: response.data.o[i],
+              high: response.data.h[i],
+              low: response.data.l[i],
+              close: response.data.c[i],
+              volume: response.data.v[i]
+            });
+          }
+        }
+        
+        results.push({
+          symbol: symbol.toUpperCase(),
+          success: true,
+          count: candles.length,
+          data: candles
+        });
+        successCount++;
+        
+      } catch (error) {
+        results.push({
+          symbol: symbol.toUpperCase(),
+          success: false,
+          error: error.message,
+          count: 0,
+          data: []
+        });
+      }
+      
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    res.json({
+      success: true,
+      period: period,
+      total_requested: symbols.length,
+      successful: successCount,
+      failed: symbols.length - successCount,
+      data: results,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error in bulk candles:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============ HEALTH & ROOT ============
 app.get('/health', (req, res) => {
   res.json({
@@ -896,7 +999,8 @@ app.get('/', (req, res) => {
         stats: 'GET /api/events/stats'
       },
       candles: {
-        historical: 'GET /api/candles/:symbol?period=1y'
+        single: 'GET /api/candles/:symbol?period=1y',
+        bulk: 'POST /api/candles/bulk - Body: {"symbols": ["NABIL", "EBL"], "period": "1m"}'
       },
       health: 'GET /health'
     },
@@ -938,12 +1042,15 @@ const server = app.listen(PORT, () => {
 🏥 Health: http://localhost:${PORT}/health
 📈 Market Summary: http://localhost:${PORT}/api/market/summary
 📅 Events: http://localhost:${PORT}/api/events
-📊 Candles: http://localhost:${PORT}/api/candles/NABIL?period=1y
+📊 Candles: 
+   • Single: http://localhost:${PORT}/api/candles/NABIL?period=1y
+   • Bulk: POST http://localhost:${PORT}/api/candles/bulk
 
-💡 Quick Test:
+💡 Quick Tests:
    curl http://localhost:${PORT}/api/market/summary
    curl http://localhost:${PORT}/api/companies/search?q=NABIL
    curl "http://localhost:${PORT}/api/candles/NABIL?period=1m"
+   curl -X POST http://localhost:${PORT}/api/candles/bulk -H "Content-Type: application/json" -d '{"symbols": ["NABIL", "EBL"], "period": "1m"}'
   `);
 });
 

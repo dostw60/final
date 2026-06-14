@@ -1,0 +1,55 @@
+<!-- Save as dashboard.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NEPSE Market Dashboard</title>
+    <style>
+        body { font-family: Arial; margin: 20px; background: #f0f0f0; }
+        .container { max-width: 1200px; margin: auto; }
+        .card { background: white; padding: 20px; margin: 10px; border-radius: 8px; }
+        .stock { display: inline-block; width: 200px; margin: 10px; padding: 15px; background: #f9f9f9; border-radius: 8px; }
+        .positive { color: green; }
+        .negative { color: red; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 NEPSE Market Dashboard</h1>
+        <div id="stocks" class="card"></div>
+    </div>
+    <script>
+        async function loadData() {
+            const response = await fetch('https://final-ocai.onrender.com/api/candles/bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    symbols: ['NABIL', 'EBL', 'PRVU', 'NIB', 'GBIME', 'SANIMA', 'NICA'],
+                    period: '1m'
+                })
+            });
+            const data = await response.json();
+            
+            const stocksDiv = document.getElementById('stocks');
+            stocksDiv.innerHTML = '<h2>Latest Stock Prices</h2>';
+            
+            data.data.forEach(stock => {
+                const latest = stock.data[stock.data.length - 1];
+                const first = stock.data[0];
+                const change = ((latest.close - first.close) / first.close * 100).toFixed(2);
+                const changeClass = change >= 0 ? 'positive' : 'negative';
+                const arrow = change >= 0 ? '▲' : '▼';
+                
+                stocksDiv.innerHTML += `
+                    <div class="stock">
+                        <h3>${stock.symbol}</h3>
+                        <p>Price: <strong>Rs. ${latest.close}</strong></p>
+                        <p class="${changeClass}">${arrow} ${Math.abs(change)}% (20 days)</p>
+                        <p>Volume: ${latest.volume.toLocaleString()}</p>
+                    </div>
+                `;
+            });
+        }
+        loadData();
+    </script>
+</body>
+</html>

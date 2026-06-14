@@ -1,11 +1,34 @@
 {
   "name": "nepse-market-data",
-  "version": "1.0.0",
-  "description": "NEPSE Market Data Scraper",
+  "version": "2.0.0",
+  "description": "NEPSE Market Data API - Real-time and historical stock data for Nepal Stock Exchange with OHLC candles, corporate events, and company directory",
   "main": "index.js",
+  "license": "MIT",
+  "author": "NEPSE API Developer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/nepse-market-data"
+  },
+  "keywords": [
+    "nepse",
+    "stock-market",
+    "api",
+    "nepal-stock-exchange",
+    "historical-data",
+    "candlesticks",
+    "trading",
+    "stock-api",
+    "nepal",
+    "market-data",
+    "real-time-stocks",
+    "stock-prices"
+  ],
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "start:silent": "node --no-deprecation index.js",
+    "prod": "NODE_ENV=production node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -16,5 +39,9 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   }
 }

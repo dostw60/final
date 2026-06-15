@@ -646,6 +646,63 @@ app.get('/api/events/dividends', async (req, res) => {
   }
 });
 
+// UPDATED AGM ENDPOINT - Shows newest events first
+app.get('/api/events/agm', async (req, res) => {
+  try {
+    const { limit = 100, fresh = false } = req.query;
+    const fromDate = `1/1/2025`;
+    const toDate = `12/31/2027`;
+    
+    const cacheKey = `agm_events_2025_2027`;
+    
+    let events;
+    if (fresh === 'true') {
+      const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+        params: { type: 'stock_event', fromDate: fromDate, toDate: toDate },
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+      });
+      events = response.data.detail || [];
+    } else {
+      const cached = cache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 3600000) {
+        events = cached.data;
+      } else {
+        const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+          params: { type: 'stock_event', fromDate: fromDate, toDate: toDate },
+          timeout: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+        });
+        events = response.data.detail || [];
+        cache.set(cacheKey, { data: events, timestamp: Date.now() });
+      }
+    }
+    
+    // Filter AGM events
+    const agmEvents = events.filter(event => 
+      event.announcementDetail.toLowerCase().includes('agm')
+    );
+    
+    // Sort by date (NEWEST first)
+    agmEvents.sort((a, b) => new Date(b.actionDate) - new Date(a.actionDate));
+    
+    const limited = agmEvents.slice(0, parseInt(limit));
+    
+    res.json({
+      success: true,
+      count: limited.length,
+      total_available: agmEvents.length,
+      date_range: { from: fromDate, to: toDate },
+      data: limited,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching AGM events:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Debug endpoint - check AGM data directly
 app.get('/api/debug/agm', async (req, res) => {
   try {
@@ -667,6 +724,40 @@ app.get('/api/debug/agm', async (req, res) => {
     });
     
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search AGM events by company name
+app.get('/api/agm/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.length < 3) {
+      return res.status(400).json({ error: 'Search query required (min 3 characters)' });
+    }
+    
+    const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+      params: { type: 'stock_event', fromDate: '1/1/2025', toDate: '12/31/2027' },
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+    });
+    
+    const events = response.data.detail || [];
+    const agmEvents = events.filter(event => 
+      event.announcementDetail.toLowerCase().includes('agm') &&
+      event.announcementDetail.toLowerCase().includes(q.toLowerCase())
+    );
+    
+    res.json({
+      success: true,
+      query: q,
+      count: agmEvents.length,
+      data: agmEvents,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error searching AGM events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -876,81 +967,29 @@ app.get('/', (req, res) => {
     <title>NEPSE Market Data API</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
-            color: #fff;
-            min-height: 100vh;
-            padding: 20px;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); color: #fff; min-height: 100vh; padding: 20px; }
         .container { max-width: 1400px; margin: 0 auto; }
-        .header {
-            background: rgba(255,255,255,0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 20px;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
+        .header { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 15px; padding: 30px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1); }
         h1 { font-size: 32px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
         .badge { background: #00ff9d; color: #1a1a2e; padding: 5px 10px; border-radius: 20px; font-size: 14px; font-weight: bold; }
         .status { color: #00ff9d; margin-top: 10px; }
         .endpoints-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px; }
-        .card {
-            background: rgba(255,255,255,0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 20px;
-            border: 1px solid rgba(255,255,255,0.1);
-            transition: transform 0.3s;
-        }
+        .card { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 15px; padding: 20px; border: 1px solid rgba(255,255,255,0.1); transition: transform 0.3s; }
         .card:hover { transform: translateY(-5px); background: rgba(255,255,255,0.15); }
-        .card-title {
-            font-size: 20px;
-            font-weight: bold;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #00ff9d;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+        .card-title { font-size: 20px; font-weight: bold; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #00ff9d; display: flex; align-items: center; gap: 10px; }
         .card-title .emoji { font-size: 24px; }
         .endpoint-list { list-style: none; }
-        .endpoint-list li {
-            margin-bottom: 12px;
-            padding: 8px;
-            border-radius: 8px;
-            transition: background 0.2s;
-        }
+        .endpoint-list li { margin-bottom: 12px; padding: 8px; border-radius: 8px; transition: background 0.2s; }
         .endpoint-list li:hover { background: rgba(255,255,255,0.1); }
-        .method {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 5px;
-            font-size: 11px;
-            font-weight: bold;
-            margin-right: 10px;
-        }
+        .method { display: inline-block; padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: bold; margin-right: 10px; }
         .method.get { background: #00ff9d; color: #1a1a2e; }
         .method.post { background: #ffd700; color: #1a1a2e; }
         .endpoint-url { font-family: monospace; font-size: 13px; word-break: break-all; }
         .endpoint-url a { color: #fff; text-decoration: none; border-bottom: 1px dashed rgba(255,255,255,0.3); }
         .endpoint-url a:hover { color: #00ff9d; border-bottom-color: #00ff9d; }
         .description { font-size: 11px; color: #aaa; margin-top: 5px; margin-left: 65px; }
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            padding: 20px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 15px;
-            font-size: 12px;
-            color: #aaa;
-        }
-        @media (max-width: 768px) {
-            .endpoints-grid { grid-template-columns: 1fr; }
-            .description { margin-left: 0; margin-top: 8px; }
-        }
+        .footer { text-align: center; margin-top: 30px; padding: 20px; background: rgba(255,255,255,0.05); border-radius: 15px; font-size: 12px; color: #aaa; }
+        @media (max-width: 768px) { .endpoints-grid { grid-template-columns: 1fr; } .description { margin-left: 0; margin-top: 8px; } }
     </style>
 </head>
 <body>
@@ -960,11 +999,8 @@ app.get('/', (req, res) => {
             <p>Real-time and historical stock data for Nepal Stock Exchange</p>
             <div class="status">🟢 Status: Running | Data Source: MeroLagani</div>
         </div>
-
         <div class="endpoints-grid">
-            <!-- Live Prices -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">🔴</span>Live Prices</div>
+            <div class="card"><div class="card-title"><span class="emoji">🔴</span>Live Prices</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/prices?fresh=true" target="_blank">${baseUrl}/api/live/prices?fresh=true</a></span><div class="description">Real-time stock prices (use ?fresh=true to bypass cache)</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/price/NABIL" target="_blank">${baseUrl}/api/live/price/:symbol</a></span><div class="description">Live price for specific stock (e.g., NABIL, EBL, PRVU)</div></li>
@@ -974,10 +1010,7 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/summary" target="_blank">${baseUrl}/api/live/summary</a></span><div class="description">Live market summary</div></li>
                 </ul>
             </div>
-
-            <!-- IPO -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">🚀</span>IPO Announcements</div>
+            <div class="card"><div class="card-title"><span class="emoji">🚀</span>IPO Announcements</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/all" target="_blank">${baseUrl}/api/ipo/all</a></span><div class="description">All IPO announcements</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/upcoming" target="_blank">${baseUrl}/api/ipo/upcoming</a></span><div class="description">Upcoming IPOs</div></li>
@@ -985,10 +1018,7 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/recent" target="_blank">${baseUrl}/api/ipo/recent</a></span><div class="description">Recent IPOs (last 6 months)</div></li>
                 </ul>
             </div>
-
-            <!-- Dividends -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">💰</span>Dividends</div>
+            <div class="card"><div class="card-title"><span class="emoji">💰</span>Dividends</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/all" target="_blank">${baseUrl}/api/dividends/all</a></span><div class="description">All dividend announcements</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/latest?limit=20" target="_blank">${baseUrl}/api/dividends/latest?limit=20</a></span><div class="description">Latest dividends (6 months)</div></li>
@@ -997,10 +1027,7 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/yield/NABIL?price=500" target="_blank">${baseUrl}/api/dividends/yield/:symbol?price=500</a></span><div class="description">Dividend yield calculation</div></li>
                 </ul>
             </div>
-
-            <!-- Bonus Shares -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">🎁</span>Bonus Shares</div>
+            <div class="card"><div class="card-title"><span class="emoji">🎁</span>Bonus Shares</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/all" target="_blank">${baseUrl}/api/bonus/all</a></span><div class="description">All bonus announcements</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/company/NABIL" target="_blank">${baseUrl}/api/bonus/company/:symbol</a></span><div class="description">Bonus by company</div></li>
@@ -1010,10 +1037,7 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/impact/NABIL?price=500" target="_blank">${baseUrl}/api/bonus/impact/:symbol?price=500</a></span><div class="description">Calculate bonus impact on price</div></li>
                 </ul>
             </div>
-
-            <!-- Market Data -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">📈</span>Market Data</div>
+            <div class="card"><div class="card-title"><span class="emoji">📈</span>Market Data</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/summary" target="_blank">${baseUrl}/api/market/summary</a></span><div class="description">Complete market summary</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/overall" target="_blank">${baseUrl}/api/market/overall</a></span><div class="description">Overall market statistics</div></li>
@@ -1025,19 +1049,13 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/active" target="_blank">${baseUrl}/api/market/active</a></span><div class="description">Most active stocks</div></li>
                 </ul>
             </div>
-
-            <!-- Stocks -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">📊</span>Stocks</div>
+            <div class="card"><div class="card-title"><span class="emoji">📊</span>Stocks</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stocks" target="_blank">${baseUrl}/api/stocks</a></span><div class="description">All stocks data</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stock/NABIL" target="_blank">${baseUrl}/api/stock/:symbol</a></span><div class="description">Specific stock data (e.g., NABIL)</div></li>
                 </ul>
             </div>
-
-            <!-- Companies -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">🏢</span>Companies</div>
+            <div class="card"><div class="card-title"><span class="emoji">🏢</span>Companies</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/search?q=NABIL" target="_blank">${baseUrl}/api/companies/search?q=NABIL</a></span><div class="description">Search companies</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/all" target="_blank">${baseUrl}/api/companies/all</a></span><div class="description">All companies list</div></li>
@@ -1045,10 +1063,7 @@ app.get('/', (req, res) => {
                     <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/companies/batch</span><div class="description">Batch company details (POST with JSON body)</div></li>
                 </ul>
             </div>
-
-            <!-- Events -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">📅</span>Corporate Events</div>
+            <div class="card"><div class="card-title"><span class="emoji">📅</span>Corporate Events</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events" target="_blank">${baseUrl}/api/events</a></span><div class="description">All corporate events</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/upcoming?months=3" target="_blank">${baseUrl}/api/events/upcoming?months=3</a></span><div class="description">Upcoming events (next 3 months)</div></li>
@@ -1060,35 +1075,25 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/stats" target="_blank">${baseUrl}/api/events/stats</a></span><div class="description">Event statistics</div></li>
                 </ul>
             </div>
-
-            <!-- Candles -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">🕯️</span>Historical Candles</div>
+            <div class="card"><div class="card-title"><span class="emoji">🕯️</span>Historical Candles</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/candles/NABIL?period=1y" target="_blank">${baseUrl}/api/candles/:symbol?period=1y</a></span><div class="description">Historical OHLC data (period: 1w,1m,3m,6m,1y,2y,3y,5y)</div></li>
                     <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/candles/bulk</span><div class="description">Bulk candles for multiple symbols (max 50)</div></li>
                 </ul>
             </div>
-
-            <!-- NEPSE Index -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">📉</span>NEPSE Index</div>
+            <div class="card"><div class="card-title"><span class="emoji">📉</span>NEPSE Index</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/latest" target="_blank">${baseUrl}/api/index/latest</a></span><div class="description">Latest NEPSE Index value</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/historical?limit=100" target="_blank">${baseUrl}/api/index/historical?limit=100</a></span><div class="description">Historical index data (2814 records)</div></li>
                 </ul>
             </div>
-
-            <!-- Charts -->
-            <div class="card">
-                <div class="card-title"><span class="emoji">📊</span>Charts & Health</div>
+            <div class="card"><div class="card-title"><span class="emoji">📊</span>Charts & Health</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart" target="_blank">${baseUrl}/chart</a></span><div class="description">Interactive SOPAN candlestick chart</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/health" target="_blank">${baseUrl}/health</a></span><div class="description">API health check</div></li>
                 </ul>
             </div>
         </div>
-
         <div class="footer">
             <p>🚀 NEPSE Market Data API | Real-time data from MeroLagani | Cached for performance</p>
             <p>💡 Tip: Use ?fresh=true to bypass cache and get latest data</p>
@@ -1098,122 +1103,71 @@ app.get('/', (req, res) => {
 </body>
 </html>`);
 });
+
 // ============ BONUS SHARE ENDPOINTS ============
 const bonusScraper = require('./scrapers/events/bonusScraper');
 
-// Get all bonus shares
 app.get('/api/bonus/all', async (req, res) => {
   try {
     const { fiscalYear } = req.query;
     const result = await bonusScraper.fetchBonusShares(fiscalYear);
-    res.json({
-      success: result.success,
-      count: result.count,
-      data: result.data,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: result.success, count: result.count, data: result.data, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error('Error fetching bonus shares:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get bonus by company
 app.get('/api/bonus/company/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const limit = parseInt(req.query.limit) || 10;
     const bonuses = await bonusScraper.getBonusByCompany(symbol, limit);
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      count: bonuses.length,
-      data: bonuses,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: true, symbol: symbol.toUpperCase(), count: bonuses.length, data: bonuses, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error(`Error fetching bonus for ${req.params.symbol}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get upcoming bonus
 app.get('/api/bonus/upcoming', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
     const upcoming = await bonusScraper.getUpcomingBonus(limit);
-    res.json({
-      success: true,
-      count: upcoming.length,
-      data: upcoming,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: true, count: upcoming.length, data: upcoming, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error('Error fetching upcoming bonus:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get bonus history by fiscal year
 app.get('/api/bonus/history/:fiscalYear', async (req, res) => {
   try {
     const { fiscalYear } = req.params;
     const history = await bonusScraper.getBonusHistory(fiscalYear);
-    res.json({
-      success: true,
-      fiscal_year: fiscalYear,
-      count: history.length,
-      data: history,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: true, fiscal_year: fiscalYear, count: history.length, data: history, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error(`Error fetching bonus history for FY ${req.params.fiscalYear}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get bonus statistics
 app.get('/api/bonus/stats/:fiscalYear', async (req, res) => {
   try {
     const { fiscalYear } = req.params;
     const stats = await bonusScraper.getTotalBonusShares(fiscalYear);
     const history = await bonusScraper.getBonusHistory(fiscalYear);
-    res.json({
-      success: true,
-      fiscal_year: fiscalYear,
-      statistics: stats,
-      top_bonus: history.slice(0, 10),
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: true, fiscal_year: fiscalYear, statistics: stats, top_bonus: history.slice(0, 10), timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error(`Error fetching bonus stats for FY ${req.params.fiscalYear}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Calculate bonus impact
 app.get('/api/bonus/impact/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const { price } = req.query;
-    
-    if (!price) {
-      return res.status(400).json({ error: 'Price parameter required' });
-    }
-    
+    if (!price) return res.status(400).json({ error: 'Price parameter required' });
     const impact = await bonusScraper.calculateBonusImpact(symbol, parseFloat(price));
-    
-    if (!impact) {
-      return res.status(404).json({ error: 'No bonus data found for symbol' });
-    }
-    
-    res.json({
-      success: true,
-      data: impact,
-      timestamp: new Date().toISOString()
-    });
+    if (!impact) return res.status(404).json({ error: 'No bonus data found for symbol' });
+    res.json({ success: true, data: impact, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error(`Error calculating bonus impact for ${req.params.symbol}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1221,98 +1175,98 @@ app.get('/api/bonus/impact/:symbol', async (req, res) => {
 // ============ DIVIDEND ENDPOINTS ============
 const dividendScraper = require('./scrapers/events/dividendScraper');
 
-// Get all dividends
 app.get('/api/dividends/all', async (req, res) => {
   try {
     const { fiscalYear } = req.query;
     const result = await dividendScraper.fetchDividends(fiscalYear);
-    res.json({
-      success: result.success,
-      count: result.count,
-      data: result.data,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: result.success, count: result.count, data: result.data, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error('Error fetching dividends:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get latest dividends (last 6 months)
 app.get('/api/dividends/latest', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
     const dividends = await dividendScraper.getLatestDividends(limit);
-    res.json({
-      success: true,
-      count: dividends.length,
-      data: dividends,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: true, count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error('Error fetching latest dividends:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get dividends by company
 app.get('/api/dividends/company/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const limit = parseInt(req.query.limit) || 10;
     const dividends = await dividendScraper.getDividendsByCompany(symbol, limit);
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      count: dividends.length,
-      data: dividends,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: true, symbol: symbol.toUpperCase(), count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error(`Error fetching dividends for ${req.params.symbol}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get dividends by fiscal year
 app.get('/api/dividends/fiscal/:year', async (req, res) => {
   try {
     const { year } = req.params;
     const dividends = await dividendScraper.getDividendsByFiscalYear(year);
-    res.json({
-      success: true,
-      fiscal_year: year,
-      count: dividends.length,
-      data: dividends,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ success: true, fiscal_year: year, count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error(`Error fetching dividends for FY ${req.params.year}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Calculate dividend yield
 app.get('/api/dividends/yield/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const { price } = req.query;
     const result = await dividendScraper.calculateDividendYield(symbol, price ? parseFloat(price) : null);
-    
-    if (!result) {
-      return res.status(404).json({ error: 'No dividend data found for symbol' });
-    }
-    
-    res.json({
-      success: true,
-      data: result,
-      timestamp: new Date().toISOString()
-    });
+    if (!result) return res.status(404).json({ error: 'No dividend data found for symbol' });
+    res.json({ success: true, data: result, timestamp: new Date().toISOString() });
   } catch (error) {
-    console.error(`Error calculating dividend yield for ${req.params.symbol}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============ IPO ENDPOINTS ============
+const ipoScraper = require('./scrapers/events/ipoScraper');
+
+app.get('/api/ipo/all', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.fetchIPOData();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/ipo/upcoming', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getUpcomingIPOs();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/ipo/active', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getActiveIPOs();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/ipo/recent', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getRecentIPOs();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);

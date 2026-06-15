@@ -1207,6 +1207,102 @@ app.get('/api/bonus/impact/:symbol', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============ DIVIDEND ENDPOINTS ============
+const dividendScraper = require('./scrapers/events/dividendScraper');
+
+// Get all dividends
+app.get('/api/dividends/all', async (req, res) => {
+  try {
+    const { fiscalYear } = req.query;
+    const result = await dividendScraper.fetchDividends(fiscalYear);
+    res.json({
+      success: result.success,
+      count: result.count,
+      data: result.data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching dividends:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get latest dividends (last 6 months)
+app.get('/api/dividends/latest', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const dividends = await dividendScraper.getLatestDividends(limit);
+    res.json({
+      success: true,
+      count: dividends.length,
+      data: dividends,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching latest dividends:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get dividends by company
+app.get('/api/dividends/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const dividends = await dividendScraper.getDividendsByCompany(symbol, limit);
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      count: dividends.length,
+      data: dividends,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching dividends for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get dividends by fiscal year
+app.get('/api/dividends/fiscal/:year', async (req, res) => {
+  try {
+    const { year } = req.params;
+    const dividends = await dividendScraper.getDividendsByFiscalYear(year);
+    res.json({
+      success: true,
+      fiscal_year: year,
+      count: dividends.length,
+      data: dividends,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching dividends for FY ${req.params.year}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Calculate dividend yield
+app.get('/api/dividends/yield/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { price } = req.query;
+    const result = await dividendScraper.calculateDividendYield(symbol, price ? parseFloat(price) : null);
+    
+    if (!result) {
+      return res.status(404).json({ error: 'No dividend data found for symbol' });
+    }
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error calculating dividend yield for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);

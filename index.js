@@ -23,7 +23,6 @@ app.use((req, res, next) => {
 });
 
 // ============ LIVE PRICE SCRAPER ============
-// Simple live price scraper - no external dependencies
 class LivePriceScraper {
   constructor() {
     this.MEROLAGANI_MARKET_API = 'https://www.merolagani.com/handlers/webrequesthandler.ashx?type=market_summary';
@@ -517,20 +516,44 @@ async function fetchStockEvents(fromDate, toDate) {
   return response.data.detail || [];
 }
 
+// Helper function to validate and fix dates
+function validateDateRange(fromDate, toDate) {
+  let from = fromDate;
+  let to = toDate;
+  
+  // Fix invalid "to" date (e.g., 7/0/2026)
+  const toParts = to.split('/');
+  if (parseInt(toParts[1]) === 0) {
+    const year = parseInt(toParts[2]);
+    const month = parseInt(toParts[0]) - 1;
+    const lastDay = new Date(year, month, 0);
+    to = `${lastDay.getMonth() + 1}/${lastDay.getDate()}/${lastDay.getFullYear()}`;
+  }
+  
+  return { from, to };
+}
+
 app.get('/api/events', async (req, res) => {
   try {
-    const { from, to, type, symbol, limit = 100 } = req.query;
-    const now = new Date();
-    const fromDate = from || `${now.getMonth() + 1}/1/${now.getFullYear()}`;
-    const toDate = to || `${now.getMonth() + 2}/0/${now.getFullYear()}`;
+    let { from, to, type, symbol, limit = 100 } = req.query;
     
-    const cacheKey = `events_${fromDate}_${toDate}`;
+    const now = new Date();
+    if (!from) from = `${now.getMonth() + 1}/1/${now.getFullYear()}`;
+    if (!to) {
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      to = `${lastDay.getMonth() + 1}/${lastDay.getDate()}/${lastDay.getFullYear()}`;
+    }
+    
+    // Fix invalid dates
+    const validated = validateDateRange(from, to);
+    
+    const cacheKey = `events_${validated.from}_${validated.to}`;
     const cached = cache.get(cacheKey);
     let events;
     if (cached && Date.now() - cached.timestamp < 3600000) {
       events = cached.data;
     } else {
-      events = await fetchStockEvents(fromDate, toDate);
+      events = await fetchStockEvents(validated.from, validated.to);
       cache.set(cacheKey, { data: events, timestamp: Date.now() });
     }
     
@@ -544,7 +567,14 @@ app.get('/api/events', async (req, res) => {
     }
     events = events.slice(0, parseInt(limit));
     
-    res.json({ success: true, count: events.length, data: events, filters: { from: fromDate, to: toDate, type, symbol, limit }, timestamp: new Date().toISOString() });
+    res.json({
+      success: true,
+      count: events.length,
+      data: events,
+      date_range: { from: validated.from, to: validated.to },
+      filters: { from, to, type, symbol, limit },
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
     console.error('Error fetching events:', error.message);
     res.status(500).json({ error: error.message });
@@ -763,7 +793,101 @@ app.post('/api/candles/bulk', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ============ DIVIDEND ENDPOINTS ============
+const dividendScraper = require('./scrapers/events/dividendScraper');
 
+// Get all dividends
+app.get('/api/dividends/all', async (req, res) => {
+  try {
+    const { fiscalYear } = req.query;
+    const result = await dividendScraper.fetchDividends(fiscalYear);
+    res.json({
+      success: result.success,
+      count: result.count,
+      data: result.data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching dividends:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get latest dividends
+app.get('/api/dividends/latest', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const dividends = await dividendScraper.getLatestDividends(limit);
+    res.json({
+      success: true,
+      count: dividends.length,
+      data: dividends,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching latest dividends:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get dividends by company
+app.get('/api/dividends/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const dividends = await dividendScraper.getDividendsByCompany(symbol, limit);
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      count: dividends.length,
+      data: dividends,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching dividends for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get dividends by fiscal year
+app.get('/api/dividends/fiscal/:year', async (req, res) => {
+  try {
+    const { year } = req.params;
+    const dividends = await dividendScraper.getDividendsByFiscalYear(year);
+    res.json({
+      success: true,
+      fiscal_year: year,
+      count: dividends.length,
+      data: dividends,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching dividends for FY ${req.params.year}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Calculate dividend yield
+app.get('/api/dividends/yield/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { price } = req.query;
+    const result = await dividendScraper.calculateDividendYield(symbol, price ? parseFloat(price) : null);
+    
+    if (!result) {
+      return res.status(404).json({ error: 'No dividend data found for symbol' });
+    }
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error calculating dividend yield for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ NEPSE INDEX ENDPOINTS ============
 app.get('/api/index/historical', async (req, res) => {
   try {
@@ -817,12 +941,195 @@ app.get('/api/index/latest', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ============ BONUS SHARE ENDPOINTS ============
+const bonusScraper = require('./scrapers/events/bonusScraper');
 
+// Get all bonus shares
+app.get('/api/bonus/all', async (req, res) => {
+  try {
+    const { fiscalYear } = req.query;
+    const result = await bonusScraper.fetchBonusShares(fiscalYear);
+    res.json({
+      success: result.success,
+      count: result.count,
+      data: result.data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching bonus shares:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bonus by company
+app.get('/api/bonus/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const bonuses = await bonusScraper.getBonusByCompany(symbol, limit);
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      count: bonuses.length,
+      data: bonuses,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching bonus for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get upcoming bonus
+app.get('/api/bonus/upcoming', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const upcoming = await bonusScraper.getUpcomingBonus(limit);
+    res.json({
+      success: true,
+      count: upcoming.length,
+      data: upcoming,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching upcoming bonus:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bonus history by fiscal year
+app.get('/api/bonus/history/:fiscalYear', async (req, res) => {
+  try {
+    const { fiscalYear } = req.params;
+    const history = await bonusScraper.getBonusHistory(fiscalYear);
+    res.json({
+      success: true,
+      fiscal_year: fiscalYear,
+      count: history.length,
+      data: history,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching bonus history for FY ${req.params.fiscalYear}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bonus statistics
+app.get('/api/bonus/stats/:fiscalYear', async (req, res) => {
+  try {
+    const { fiscalYear } = req.params;
+    const stats = await bonusScraper.getTotalBonusShares(fiscalYear);
+    const history = await bonusScraper.getBonusHistory(fiscalYear);
+    res.json({
+      success: true,
+      fiscal_year: fiscalYear,
+      statistics: stats,
+      top_bonus: history.slice(0, 10),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching bonus stats for FY ${req.params.fiscalYear}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Calculate bonus impact
+app.get('/api/bonus/impact/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { price } = req.query;
+    
+    if (!price) {
+      return res.status(400).json({ error: 'Price parameter required' });
+    }
+    
+    const impact = await bonusScraper.calculateBonusImpact(symbol, parseFloat(price));
+    
+    if (!impact) {
+      return res.status(404).json({ error: 'No bonus data found for symbol' });
+    }
+    
+    res.json({
+      success: true,
+      data: impact,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error calculating bonus impact for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ CHART ENDPOINT ============
 app.get('/chart', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>SOPAN Candlestick Chart</title><script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.js"></script><style>body{margin:0;padding:20px;background:#1a1a2e;color:#fff}#chart{width:100%;height:600px}</style></head><body><h2>SOPAN Pharmaceuticals (SOPL)</h2><div id="chart"></div><script>fetch('/api/candles/SOPL?period=1m').then(r=>r.json()).then(data=>{const chart=LightweightCharts.createChart(document.getElementById('chart'),{width:window.innerWidth-40,height:600,layout:{background:{color:'#1a1a2e'},textColor:'#ddd'}});const series=chart.addCandlestickSeries({upColor:'#4caf50',downColor:'#f44336'});series.setData(data.data.map(c=>({time:c.date,open:c.open,high:c.high,low:c.low,close:c.close})));chart.timeScale().fitContent()});</script></body></html>`);
 });
+// ============ IPO ENDPOINTS ============
+const ipoScraper = require('./scrapers/events/ipoScraper');
 
+// Get all IPOs
+app.get('/api/ipo/all', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.fetchIPOData();
+    res.json({
+      success: true,
+      count: ipos.length,
+      data: ipos,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching IPOs:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get upcoming IPOs
+app.get('/api/ipo/upcoming', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getUpcomingIPOs();
+    res.json({
+      success: true,
+      count: ipos.length,
+      data: ipos,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching upcoming IPOs:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get active IPOs
+app.get('/api/ipo/active', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getActiveIPOs();
+    res.json({
+      success: true,
+      count: ipos.length,
+      data: ipos,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching active IPOs:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get recent IPOs
+app.get('/api/ipo/recent', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getRecentIPOs();
+    res.json({
+      success: true,
+      count: ipos.length,
+      data: ipos,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching recent IPOs:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ HEALTH & ROOT ============
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString(), uptime: process.uptime(), cache_size: cache.size });
@@ -843,6 +1150,27 @@ app.get('/', (req, res) => {
         active: 'GET /api/live/active - Most active stocks',
         summary: 'GET /api/live/summary - Live market summary'
       },
+      ipo: {
+  all: 'GET /api/ipo/all - All IPO announcements',
+  upcoming: 'GET /api/ipo/upcoming - Upcoming IPOs',
+  active: 'GET /api/ipo/active - Currently active IPOs',
+  recent: 'GET /api/ipo/recent - Recent IPOs (last 6 months)'
+},
+dividends: {
+  all: 'GET /api/dividends/all - All dividend announcements',
+  latest: 'GET /api/dividends/latest?limit=20 - Latest dividends (6 months)',
+  byCompany: 'GET /api/dividends/company/:symbol - Dividends by company',
+  byFiscalYear: 'GET /api/dividends/fiscal/:year - Dividends by fiscal year',
+  yield: 'GET /api/dividends/yield/:symbol?price=500 - Dividend yield calculation'
+},
+bonus: {
+  all: 'GET /api/bonus/all - All bonus announcements',
+  byCompany: 'GET /api/bonus/company/:symbol - Bonus by company',
+  upcoming: 'GET /api/bonus/upcoming - Upcoming bonus announcements',
+  history: 'GET /api/bonus/history/:fiscalYear - Bonus history by fiscal year',
+  stats: 'GET /api/bonus/stats/:fiscalYear - Bonus statistics',
+  impact: 'GET /api/bonus/impact/:symbol?price=500 - Calculate bonus impact on price'
+},
       market: {
         summary: 'GET /api/market/summary',
         overall: 'GET /api/market/overall',
@@ -906,6 +1234,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`📅 Events: http://localhost:${PORT}/api/events`);
   console.log(`📉 Chart: http://localhost:${PORT}/chart`);
   console.log(`💚 Health: http://localhost:${PORT}/health`);
+  console.log(`🔴 Live Price: http://localhost:${PORT}/api/live/price/NABIL`);
 });
 
 module.exports = app;

@@ -1,138 +1,225 @@
 // scrapers/events/ipoScraper.js
 const axios = require('axios');
-const pool = require('../../db/pool');
-const dateParser = require('../../services/dateParser');
 const { withRetry } = require('../../utils/retry');
-const logger = require('../../utils/logger');
 
 class NEPSEIPOScraper {
   constructor() {
-    this.SHARESANSAR_API = `${process.env.SHARESANSAR_API}/ipo`;
+    // MeroLagani endpoints for IPO data
+    this.MEROLAGANI_STOCK_EVENT_API = 'https://www.merolagani.com/handlers/webrequesthandler.ashx';
+    this.cache = new Map();
   }
 
-  async updateIPOCalendar() {
+  /**
+   * Fetch IPO data from stock events
+   */
+  async fetchIPOData() {
     try {
-      logger.info('Fetching IPO calendar...');
+      const cacheKey = 'ipo_data';
+      const cached = this.cache.get(cacheKey);
       
-      const data = await withRetry(
-        () => this.fetchIPOData(),
-        { retries: 2, delay: 3000 }
+      if (cached && Date.now() - cached.timestamp < 3600000) {
+        return cached.data;
+      }
+      
+      // Fetch from stock events API
+      const now = new Date();
+      const fromDate = `1/1/${now.getFullYear() - 1}`;
+      const toDate = `12/31/${now.getFullYear() + 1}`;
+      
+      const response = await axios.get(this.MEROLAGANI_STOCK_EVENT_API, {
+        params: {
+          type: 'stock_event',
+          fromDate: fromDate,
+          toDate: toDate
+        },
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Accept': 'application/json'
+        }
+      });
+      
+      const events = response.data.detail || [];
+      
+      // Filter IPO events
+      const ipoEvents = events.filter(event => 
+        event.announcementDetail.toLowerCase().includes('ipo') ||
+        event.announcementDetail.toLowerCase().includes('initial public offering')
       );
       
-      const parsedIPO = await this.parseIPOData(data);
-      const inserted = await this.upsertIPOs(parsedIPO);
+      const parsedIPOs = this.parseIPOEvents(ipoEvents);
       
-      logger.info(`Updated ${inserted.length} IPO entries`);
+      this.cache.set(cacheKey, { data: parsedIPOs, timestamp: Date.now() });
       
-      return {
-        success: true,
-        records: inserted.length
-      };
+      return parsedIPOs;
       
     } catch (error) {
-      logger.error('IPO scraping failed:', error);
-      return { success: false, error: error.message };
+      console.error('Failed to fetch IPO data:', error.message);
+      return [];
     }
   }
 
-  async fetchIPOData() {
-    const response = await axios.get(this.SHARESANSAR_API, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept': 'application/json'
-      },
-      timeout: 10000
-    });
-    
-    return response.data;
-  }
-
-  async parseIPOData(data) {
+  /**
+   * Parse IPO events from announcement text
+   */
+  parseIPOEvents(events) {
     const ipos = [];
     
-    // This is a template - actual parsing depends on the API response structure
-    const ipoList = data.ipos || data.data || [];
-    
-    for (const item of ipoList) {
+    for (const event of events) {
+      const text = event.announcementDetail;
+      
+      // Extract company name
+      let companyName = this.extractCompanyName(text);
+      let symbol = this.extractSymbol(text);
+      
+      // Extract units
+      let units = null;
+      const unitsMatch = text.match(/(\d[\d,]+\.?\d*)\s*units/);
+      if (unitsMatch) {
+        units = parseInt(unitsMatch[1].replace(/,/g, ''));
+      }
+      
+      // Extract issue price
+      let issuePrice = 100; // Default face value
+      const priceMatch = text.match(/@\s*Rs\.?\s*(\d+(?:\.\d+)?)/i);
+      if (priceMatch) {
+        issuePrice = parseFloat(priceMatch[1]);
+      }
+      
+      // Extract dates
+      let openDate = null;
+      let closeDate = null;
+      
+      // Look for date patterns like "from 18th - 21st Jestha, 2083"
+      const dateMatch = text.match(/from\s+(\d+)\w*\s*-\s*(\d+)\w*\s+([^,]+),\s+(\d{4})/i);
+      if (dateMatch) {
+        // This would need Nepali date conversion - use actionDate as fallback
+        openDate = event.actionDate;
+        closeDate = event.actionDate;
+      }
+      
+      // Determine status based on dates
+      let status = 'upcoming';
+      if (openDate) {
+        const now = new Date();
+        const open = new Date(openDate);
+        const close = closeDate ? new Date(closeDate) : open;
+        
+        if (now < open) status = 'upcoming';
+        else if (now >= open && now <= close) status = 'open';
+        else status = 'closed';
+      }
+      
       ipos.push({
-        company_name: item.name || item.companyName,
-        symbol: item.symbol,
-        issue_type: this.determineIssueType(item),
-        units_available: parseInt(item.units) || parseInt(item.shares) || 0,
-        issue_price: parseFloat(item.price) || 100,
-        open_date: dateParser.parseMarketDate(item.openDate, 'sharesansar'),
-        close_date: dateParser.parseMarketDate(item.closeDate, 'sharesansar'),
-        status: this.determineStatus(item),
-        source_url: item.url
+        company_name: companyName,
+        symbol: symbol,
+        issue_type: 'IPO',
+        units_available: units,
+        issue_price: issuePrice,
+        open_date: openDate,
+        close_date: closeDate,
+        status: status,
+        description: text,
+        source_date: event.actionDate,
+        raw: text
       });
     }
     
-    return ipos.filter(ipo => ipo.open_date && ipo.close_date);
+    return ipos;
   }
 
-  determineIssueType(item) {
-    if (item.type === 'FPO' || item.issueType === 'FPO') return 'FPO';
-    if (item.type === 'RIGHT' || item.issueType === 'RIGHT') return 'RIGHT';
-    return 'IPO';
-  }
-
-  determineStatus(item) {
-    const now = new Date();
-    const openDate = new Date(item.openDate);
-    const closeDate = new Date(item.closeDate);
+  /**
+   * Extract company name from announcement text
+   */
+  extractCompanyName(text) {
+    // Look for patterns like "Company Name Limited"
+    const patterns = [
+      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Limited|Ltd|Bank|Company|Finance|Development|Insurance|Microfinance|Hydropower|Power)))/i,
+      /([A-Z][A-Z\s]+(?:Limited|Ltd|Bank|Company))/i,
+      /(\w+(?:\s+\w+)*)\s+(?:is going to|has|will)/
+    ];
     
-    if (now < openDate) return 'upcoming';
-    if (now >= openDate && now <= closeDate) return 'open';
-    return 'closed';
-  }
-
-  async upsertIPOs(ipos) {
-    const client = await pool.connect();
-    
-    try {
-      await client.query('BEGIN');
-      
-      const results = [];
-      
-      for (const ipo of ipos) {
-        const query = `
-          INSERT INTO ipo_calendar 
-            (company_name, symbol, issue_type, units_available, issue_price, open_date, close_date, status, source_url)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-          ON CONFLICT (company_name, open_date) 
-          DO UPDATE SET
-            close_date = EXCLUDED.close_date,
-            units_available = EXCLUDED.units_available,
-            issue_price = EXCLUDED.issue_price,
-            status = EXCLUDED.status,
-            updated_at = CURRENT_TIMESTAMP
-          RETURNING id;
-        `;
-        
-        const res = await client.query(query, [
-          ipo.company_name,
-          ipo.symbol,
-          ipo.issue_type,
-          ipo.units_available,
-          ipo.issue_price,
-          dateParser.formatForDatabase(ipo.open_date),
-          dateParser.formatForDatabase(ipo.close_date),
-          ipo.status,
-          ipo.source_url
-        ]);
-        
-        results.push(res.rows[0]);
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1] && match[1].length > 5) {
+        return match[1].trim();
       }
-      
-      await client.query('COMMIT');
-      return results;
-      
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
     }
+    
+    return null;
+  }
+
+  /**
+   * Extract symbol from announcement text
+   */
+  extractSymbol(text) {
+    // Look for symbol in parentheses
+    let match = text.match(/\(([A-Z]{3,})\)/);
+    if (match) return match[1];
+    
+    // Look for common patterns
+    match = text.match(/-\s.*?\(([A-Z]{3,})\)/);
+    if (match) return match[1];
+    
+    // Check for known symbols
+    const knownSymbols = ['NABIL', 'EBL', 'PRVU', 'NIB', 'GBIME', 'SANIMA', 'NICA', 'SOPL', 'APHL', 'MANDU', 'HDHPC'];
+    for (const sym of knownSymbols) {
+      if (text.includes(sym)) return sym;
+    }
+    
+    return null;
+  }
+
+  /**
+   * Get upcoming IPOs
+   */
+  async getUpcomingIPOs() {
+    const allIPOs = await this.fetchIPOData();
+    const now = new Date();
+    
+    return allIPOs.filter(ipo => {
+      if (!ipo.open_date) return true;
+      const openDate = new Date(ipo.open_date);
+      return openDate >= now || ipo.status === 'upcoming';
+    });
+  }
+
+  /**
+   * Get active IPOs (currently open for subscription)
+   */
+  async getActiveIPOs() {
+    const allIPOs = await this.fetchIPOData();
+    const now = new Date();
+    
+    return allIPOs.filter(ipo => {
+      if (!ipo.open_date || !ipo.close_date) return false;
+      const openDate = new Date(ipo.open_date);
+      const closeDate = new Date(ipo.close_date);
+      return now >= openDate && now <= closeDate;
+    });
+  }
+
+  /**
+   * Get recent IPOs (last 6 months)
+   */
+  async getRecentIPOs() {
+    const allIPOs = await this.fetchIPOData();
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    
+    return allIPOs.filter(ipo => {
+      if (!ipo.close_date) return false;
+      const closeDate = new Date(ipo.close_date);
+      return closeDate >= sixMonthsAgo;
+    });
+  }
+
+  /**
+   * Clear cache
+   */
+  clearCache() {
+    this.cache.clear();
+    console.log('IPO cache cleared');
   }
 }
 

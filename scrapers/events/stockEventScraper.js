@@ -1,39 +1,72 @@
 // scrapers/events/stockEventScraper.js
 const axios = require('axios');
-const pool = require('../../db/pool');
-const symbolMapper = require('../company/symbolMapper');
 const logger = require('../../utils/logger');
 
 class StockEventScraper {
     constructor() {
         this.BASE_URL = 'https://www.merolagani.com/handlers/webrequesthandler.ashx';
+        this.cache = new Map();
     }
 
     /**
-     * Fetches raw stock events for a given month.
-     * @param {Date} startDate - Start of the month.
-     * @param {Date} endDate - End of the month.
+     * Fetches raw stock events for a given date range
      */
-    async fetchEventsForMonth(startDate, endDate) {
-        const formatDate = (date) => `${date.getMonth()+1}/${date.getDate()}/${date.getFullYear()}`;
+    async fetchEvents(fromDate, toDate) {
+        const cacheKey = `events_${fromDate}_${toDate}`;
+        const cached = this.cache.get(cacheKey);
+        
+        if (cached && Date.now() - cached.timestamp < 3600000) {
+            return cached.data;
+        }
+        
         const params = {
             type: 'stock_event',
-            fromDate: formatDate(startDate),
-            toDate: formatDate(endDate)
+            fromDate: fromDate,
+            toDate: toDate
         };
 
         const response = await axios.get(this.BASE_URL, { params });
         if (response.data.mt !== 'ok') throw new Error('Invalid response from stock_event API');
-        return response.data.detail;
+        
+        const events = response.data.detail || [];
+        this.cache.set(cacheKey, { data: events, timestamp: Date.now() });
+        
+        return events;
     }
 
     /**
-     * Parses an announcement string to extract the company symbol.
-     * This is a powerful but necessary function. It uses rules and a lookup.
-     * @param {string} text - The announcementDetail text.
-     * @returns {string|null} - Extracted symbol or null.
+     * Fetches events for a specific month
+     */
+    async fetchEventsForMonth(year, month) {
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 0);
+        
+        const fromDate = `${startDate.getMonth() + 1}/${startDate.getDate()}/${startDate.getFullYear()}`;
+        const toDate = `${endDate.getMonth() + 1}/${endDate.getDate()}/${endDate.getFullYear()}`;
+        
+        return this.fetchEvents(fromDate, toDate);
+    }
+
+    /**
+     * Fetches upcoming events for next N months
+     */
+    async fetchUpcomingEvents(months = 3) {
+        const now = new Date();
+        const fromDate = `${now.getMonth() + 1}/1/${now.getFullYear()}`;
+        
+        const endDate = new Date();
+        endDate.setMonth(endDate.getMonth() + months);
+        const toDate = `${endDate.getMonth() + 1}/${endDate.getDate()}/${endDate.getFullYear()}`;
+        
+        return this.fetchEvents(fromDate, toDate);
+    }
+
+    /**
+     * Parses an announcement string to extract the company symbol
      */
     extractSymbolFromText(text) {
+        if (!text) return null;
+        
         // Rule 1: Look for parentheses with a known symbol pattern (e.g., "(NABIL)")
         let match = text.match(/\(([A-Z]{3,})\)/);
         if (match) return match[1];
@@ -46,14 +79,16 @@ class StockEventScraper {
         match = text.match(/\b([A-Z]{3,})\b(?=[.\s]*$)/);
         if (match) return match[1];
         
-        // Rule 4: Fallback to a manual keyword map for very common companies
+        // Rule 4: Manual keyword map for common companies
         const keywordMap = {
             'Nabil Bank': 'NABIL', 'NIC Asia': 'NICA', 'Global IME': 'GBIME',
             'Himalayan Bank': 'HBL', 'Kumari Bank': 'KBL', 'Prabhu Bank': 'PRVU',
             'Laxmi Sunrise': 'LSB', 'Everest Bank': 'EBL', 'Nepal Investment': 'NIB',
             'NMB Bank': 'NMB', 'Sanima Bank': 'SANIMA', 'Citizen Bank': 'CZBIL',
-            'Machhapuchchhre': 'MBL', 'Nepal SBI': 'SBI', 'Siddhartha Bank': 'SBL'
+            'Machhapuchchhre': 'MBL', 'Nepal SBI': 'SBI', 'Siddhartha Bank': 'SBL',
+            'Sopan': 'SOPL', 'SOPAN': 'SOPL'
         };
+        
         for (const [key, sym] of Object.entries(keywordMap)) {
             if (text.includes(key)) return sym;
         }
@@ -61,96 +96,94 @@ class StockEventScraper {
     }
 
     /**
-     * Determines the event type based on keywords in the text.
+     * Determines the event type based on keywords
      */
     determineEventType(text) {
+        if (!text) return 'ANNOUNCEMENT';
+        
         if (text.includes('IPO shares') || text.includes('Initial Public Offering')) return 'IPO';
         if (text.includes('FPO shares')) return 'FPO';
         if (text.includes('right share') || text.includes('Right Share')) return 'RIGHT_SHARE';
-        if (text.includes('AGM is scheduled') || text.includes('AGM scheduled')) return 'AGM';
+        if (text.includes('AGM is scheduled') || text.includes('AGM scheduled') || text.includes('AGM will')) return 'AGM';
         if (text.includes('Cash Dividend') || text.includes('Bonus Share') || text.includes('Dividend')) return 'DIVIDEND_BONUS';
         if (text.includes('auction')) return 'AUCTION';
+        
         return 'ANNOUNCEMENT';
     }
 
     /**
-     * Parses a date from the announcement text (e.g., "Jestha 18, 2083").
-     * This is complex and requires a library like 'nepali-date-converter'.
-     * For now, we'll use the actionDate from the API.
-     * @returns {string} - YYYY-MM-DD formatted date.
+     * Extract IPO units from text
      */
-    parseNepaliDate(nepaliDateStr) {
-        // TODO: Use the 'nepali-date-converter' library you already have in package.json
-        // For example: const bsDate = new NepaliDate(nepaliDateStr); return bsDate.toJSDate();
-        // Placeholder: returns today's date if parsing fails.
-        logger.warn(`Nepali date parsing not fully implemented for: ${nepaliDateStr}`);
-        return new Date().toISOString().slice(0,10);
+    extractIPOUnits(text) {
+        const match = text.match(/(\d[\d,]+\.?\d*)\s*units/);
+        return match ? parseInt(match[1].replace(/,/g, '')) : null;
     }
 
     /**
-     * Processes and saves all events for a given month.
+     * Extract company name from text
      */
-    async processMonthlyEvents(year, month) {
-        const startDate = new Date(year, month - 1, 1);
-        const endDate = new Date(year, month, 0); // Last day of the month
+    extractCompanyName(text) {
+        // Try to find pattern like "Company Name Limited (SYMBOL)"
+        const match = text.match(/([A-Za-z\s]+(?:Limited|Ltd|Bank|Company))(?:\s*\([A-Z]+\))?/i);
+        return match ? match[1].trim() : null;
+    }
+
+    /**
+     * Process events and return structured data
+     */
+    async processEvents(events) {
+        const processed = [];
         
-        const rawEvents = await this.fetchEventsForMonth(startDate, endDate);
-        logger.info(`Processing ${rawEvents.length} raw events for ${year}-${month}`);
-        
-        const processedEvents = [];
-        for (const ev of rawEvents) {
+        for (const ev of events) {
             const symbol = this.extractSymbolFromText(ev.announcementDetail);
-            const companyId = symbol ? await symbolMapper.getCompanyId(symbol) : null;
             
             const event = {
-                action_date: ev.actionDate,
-                announcement_detail: ev.announcementDetail,
+                date: ev.actionDate,
+                day: ev.day,
+                description: ev.announcementDetail,
                 event_type: this.determineEventType(ev.announcementDetail),
                 symbol: symbol,
-                company_id: companyId,
-                raw_data: ev
+                company_name: this.extractCompanyName(ev.announcementDetail)
             };
             
-            // Enhance IPO events with structured data
+            // Add IPO specific data
             if (event.event_type === 'IPO') {
-                // Use regex to extract units (e.g., "46,74,000.00 units")
-                const unitsMatch = ev.announcementDetail.match(/(\d[\d,]+\.?\d*)\s*units/);
-                event.units = unitsMatch ? parseInt(unitsMatch[1].replace(/,/g, '')) : null;
-                
-                // Extract open/close dates (e.g., "from 18th - 21st Jestha, 2083")
-                const dateMatch = ev.announcementDetail.match(/from\s+\d+\w*\s*-\s*\d+\w*\s+([^,]+),\s+(\d{4})/);
-                if (dateMatch) {
-                    // TODO: Use dateMatch[1] (month) and dateMatch[2] (year) with NepaliDate converter
-                }
+                event.units = this.extractIPOUnits(ev.announcementDetail);
             }
-            processedEvents.push(event);
+            
+            processed.push(event);
         }
         
-        await this.saveEvents(processedEvents);
-        return processedEvents;
+        return processed;
     }
-    
-    async saveEvents(events) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            for (const ev of events) {
-                // Insert into a dedicated 'corporate_events' table (create this via migration)
-                await client.query(`
-                    INSERT INTO corporate_events 
-                        (action_date, announcement_detail, event_type, symbol, company_id, raw_data)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (action_date, announcement_detail) DO NOTHING
-                `, [ev.action_date, ev.announcement_detail, ev.event_type, ev.symbol, ev.company_id, JSON.stringify(ev.raw_data)]);
-            }
-            await client.query('COMMIT');
-            logger.info(`Saved ${events.length} unique events.`);
-        } catch (error) {
-            await client.query('ROLLBACK');
-            throw error;
-        } finally {
-            client.release();
-        }
+
+    /**
+     * Get events by type (ipo, agm, dividend, etc.)
+     */
+    async getEventsByType(eventType, months = 3) {
+        const events = await this.fetchUpcomingEvents(months);
+        return events.filter(event => 
+            this.determineEventType(event.announcementDetail).toLowerCase() === eventType.toLowerCase()
+        );
+    }
+
+    /**
+     * Get events for a specific company
+     */
+    async getEventsByCompany(symbol, months = 6) {
+        const events = await this.fetchUpcomingEvents(months);
+        return events.filter(event => {
+            const extractedSymbol = this.extractSymbolFromText(event.announcementDetail);
+            return extractedSymbol && extractedSymbol.toUpperCase() === symbol.toUpperCase();
+        });
+    }
+
+    /**
+     * Clear cache
+     */
+    clearCache() {
+        this.cache.clear();
+        logger.info('Stock event cache cleared');
     }
 }
 

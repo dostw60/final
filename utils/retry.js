@@ -1,5 +1,5 @@
 // utils/retry.js
-const logger = require('./logger');
+// Remove the logger require line
 
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -7,8 +7,8 @@ async function sleep(ms) {
 
 async function withRetry(fn, options = {}) {
   const {
-    retries = parseInt(process.env.MAX_RETRIES) || 3,
-    delay = parseInt(process.env.RETRY_DELAY_MS) || 2000,
+    retries = 3,
+    delay = 2000,
     backoff = true,
     onRetry = null
   } = options;
@@ -22,7 +22,7 @@ async function withRetry(fn, options = {}) {
       lastError = error;
       
       if (i === retries) {
-        logger.error(`All ${retries} retries failed:`, error);
+        console.error(`All ${retries} retries failed:`, error.message);
         throw error;
       }
       
@@ -31,10 +31,7 @@ async function withRetry(fn, options = {}) {
       if (onRetry) {
         onRetry(error, i + 1, waitTime);
       } else {
-        logger.warn(`Attempt ${i + 1} failed. Retrying in ${waitTime}ms...`, {
-          error: error.message,
-          attempt: i + 1
-        });
+        console.warn(`Attempt ${i + 1} failed. Retrying in ${waitTime}ms...`);
       }
       
       await sleep(waitTime);

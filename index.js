@@ -5,7 +5,7 @@ const cors = require('cors');
 const axios = require('axios');
 
 const app = express();
-const PORT = process.env.API_PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 // Simple in-memory cache
 const cache = new Map();
@@ -21,6 +21,184 @@ app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
 });
+
+// ============ LIVE PRICE SCRAPER ============
+// Simple live price scraper - no external dependencies
+class LivePriceScraper {
+  constructor() {
+    this.MEROLAGANI_MARKET_API = 'https://www.merolagani.com/handlers/webrequesthandler.ashx?type=market_summary';
+    this.cache = new Map();
+    this.lastRequestTime = 0;
+    this.requestDelay = 2000;
+  }
+
+  isMarketOpen() {
+    const now = new Date();
+    const nepalTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kathmandu' }));
+    const hour = nepalTime.getHours();
+    const day = nepalTime.getDay();
+    const isWeekday = day >= 0 && day <= 4;
+    const isTradingHour = hour >= 11 && hour <= 15;
+    return isWeekday && isTradingHour;
+  }
+
+  getCacheTTL() {
+    return this.isMarketOpen() ? 2000 : 30000;
+  }
+
+  async getCurrentPrices(forceFresh = false) {
+    try {
+      const cacheKey = 'live_prices_all';
+      const cached = this.cache.get(cacheKey);
+      const cacheTTL = this.getCacheTTL();
+      
+      if (!forceFresh && cached && Date.now() - cached.timestamp < cacheTTL) {
+        return cached.data;
+      }
+      
+      const now = Date.now();
+      const timeSinceLastRequest = now - this.lastRequestTime;
+      if (timeSinceLastRequest < this.requestDelay) {
+        await new Promise(resolve => setTimeout(resolve, this.requestDelay - timeSinceLastRequest));
+      }
+      
+      this.lastRequestTime = Date.now();
+      
+      const response = await axios.get(this.MEROLAGANI_MARKET_API, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        }
+      });
+      
+      const stocks = response.data.stock?.detail || [];
+      const turnoverData = response.data.turnover?.detail || [];
+      const turnoverMap = new Map();
+      
+      for (const item of turnoverData) {
+        turnoverMap.set(item.s, item);
+      }
+      
+      const normalized = [];
+      for (const item of stocks) {
+        const symbol = (item.s || '').toUpperCase();
+        if (!symbol) continue;
+        
+        const extraData = turnoverMap.get(symbol) || {};
+        const lastPrice = this.parseNumeric(item.lp || 0);
+        const change = this.parseNumeric(item.c || 0);
+        
+        let percentChange = this.parseNumeric(item.pc || 0);
+        if (percentChange === 0 && change !== 0 && lastPrice !== 0) {
+          const prevClose = lastPrice - change;
+          if (prevClose > 0) {
+            percentChange = (change / prevClose) * 100;
+          }
+        }
+        
+        let previousClose = this.parseNumeric(extraData.pc || 0);
+        if (previousClose === 0 && lastPrice !== 0 && change !== 0) {
+          previousClose = lastPrice - change;
+        }
+        
+        let openPrice = this.parseNumeric(extraData.op || item.op || 0);
+        if (openPrice === 0 && previousClose !== 0) {
+          openPrice = previousClose;
+        }
+        
+        normalized.push({
+          symbol: symbol,
+          last_traded_price: lastPrice,
+          change: change,
+          percent_change: parseFloat(percentChange.toFixed(2)),
+          volume: parseInt(item.q || extraData.q || 0),
+          turnover: this.parseNumeric(extraData.t || item.t || 0),
+          high: this.parseNumeric(extraData.h || item.h || 0),
+          low: this.parseNumeric(extraData.l || item.l || 0),
+          open: openPrice,
+          previous_close: previousClose,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      this.cache.set(cacheKey, { data: normalized, timestamp: Date.now() });
+      return normalized;
+      
+    } catch (error) {
+      console.error('Failed to fetch live prices:', error.message);
+      return [];
+    }
+  }
+
+  async getStockPrice(symbol) {
+    try {
+      const cacheKey = `live_price_${symbol.toUpperCase()}`;
+      const cached = this.cache.get(cacheKey);
+      const cacheTTL = this.getCacheTTL();
+      
+      if (cached && Date.now() - cached.timestamp < cacheTTL) {
+        return cached.data;
+      }
+      
+      const allPrices = await this.getCurrentPrices();
+      const stockPrice = allPrices.find(p => p.symbol === symbol.toUpperCase());
+      
+      if (stockPrice) {
+        this.cache.set(cacheKey, { data: stockPrice, timestamp: Date.now() });
+      }
+      
+      return stockPrice || null;
+    } catch (error) {
+      console.error(`Failed to fetch price for ${symbol}:`, error.message);
+      return null;
+    }
+  }
+
+  async getTopGainers(limit = 10) {
+    const prices = await this.getCurrentPrices();
+    return prices.filter(p => p.percent_change > 0).sort((a, b) => b.percent_change - a.percent_change).slice(0, limit);
+  }
+
+  async getTopLosers(limit = 10) {
+    const prices = await this.getCurrentPrices();
+    return prices.filter(p => p.percent_change < 0).sort((a, b) => a.percent_change - b.percent_change).slice(0, limit);
+  }
+
+  async getMostActive(limit = 10) {
+    const prices = await this.getCurrentPrices();
+    return prices.sort((a, b) => b.volume - a.volume).slice(0, limit);
+  }
+
+  async getMarketSummary() {
+    const prices = await this.getCurrentPrices();
+    if (prices.length === 0) {
+      return { total_stocks: 0, total_volume: 0, total_turnover: 0, advancing: 0, declining: 0, unchanged: 0, avg_change: 0, market_open: this.isMarketOpen() };
+    }
+    return {
+      total_stocks: prices.length,
+      total_volume: prices.reduce((sum, p) => sum + p.volume, 0),
+      total_turnover: prices.reduce((sum, p) => sum + p.turnover, 0),
+      advancing: prices.filter(p => p.change > 0).length,
+      declining: prices.filter(p => p.change < 0).length,
+      unchanged: prices.filter(p => p.change === 0).length,
+      avg_change: (prices.reduce((sum, p) => sum + p.percent_change, 0) / prices.length).toFixed(2),
+      market_open: this.isMarketOpen(),
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  parseNumeric(value) {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') return isNaN(value) ? 0 : value;
+    const cleaned = String(value).replace(/[^0-9.-]/g, '');
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+}
+
+const livePriceScraper = new LivePriceScraper();
 
 // Helper function to calculate start date based on period
 function getStartDate(period) {
@@ -157,6 +335,73 @@ app.get('/api/market/active', async (req, res) => {
     const active = stocks.sort((a, b) => b.q - a.q).slice(0, limit);
     res.json({ success: true, count: active.length, data: active, timestamp: new Date().toISOString() });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ LIVE PRICE ENDPOINTS ============
+app.get('/api/live/prices', async (req, res) => {
+  try {
+    const forceFresh = req.query.fresh === 'true';
+    const prices = await livePriceScraper.getCurrentPrices(forceFresh);
+    res.json({ success: true, count: prices.length, data: prices, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('Error fetching live prices:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/live/price/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const price = await livePriceScraper.getStockPrice(symbol);
+    if (!price) return res.status(404).json({ error: 'Stock not found' });
+    res.json({ success: true, data: price, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error(`Error fetching live price for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/live/gainers', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const gainers = await livePriceScraper.getTopGainers(limit);
+    res.json({ success: true, count: gainers.length, data: gainers, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('Error fetching gainers:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/live/losers', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const losers = await livePriceScraper.getTopLosers(limit);
+    res.json({ success: true, count: losers.length, data: losers, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('Error fetching losers:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/live/active', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const active = await livePriceScraper.getMostActive(limit);
+    res.json({ success: true, count: active.length, data: active, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('Error fetching active stocks:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/live/summary', async (req, res) => {
+  try {
+    const summary = await livePriceScraper.getMarketSummary();
+    res.json({ success: true, data: summary, timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('Error fetching market summary:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -643,126 +888,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// ============ LIVE PRICE ENDPOINTS ============
-const livePriceScraper = require('./scrapers/market/livePriceScraper');
-
-// Get all live prices
-app.get('/api/live/prices', async (req, res) => {
-  try {
-    const forceFresh = req.query.fresh === 'true';
-    const prices = await livePriceScraper.getCurrentPrices(forceFresh);
-    res.json({
-      success: true,
-      count: prices.length,
-      data: prices,
-      market_open: livePriceScraper.isMarketOpen(),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching live prices:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get live price for specific stock
-app.get('/api/live/price/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const price = await livePriceScraper.getStockPrice(symbol);
-    
-    if (!price) {
-      return res.status(404).json({ error: 'Stock not found' });
-    }
-    
-    res.json({
-      success: true,
-      data: price,
-      market_open: livePriceScraper.isMarketOpen(),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error fetching live price for ${req.params.symbol}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get top gainers
-app.get('/api/live/gainers', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const gainers = await livePriceScraper.getTopGainers(limit);
-    res.json({
-      success: true,
-      count: gainers.length,
-      data: gainers,
-      market_open: livePriceScraper.isMarketOpen(),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching gainers:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get top losers
-app.get('/api/live/losers', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const losers = await livePriceScraper.getTopLosers(limit);
-    res.json({
-      success: true,
-      count: losers.length,
-      data: losers,
-      market_open: livePriceScraper.isMarketOpen(),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching losers:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get most active stocks
-app.get('/api/live/active', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const active = await livePriceScraper.getMostActive(limit);
-    res.json({
-      success: true,
-      count: active.length,
-      data: active,
-      market_open: livePriceScraper.isMarketOpen(),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching active stocks:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get live market summary
-app.get('/api/live/summary', async (req, res) => {
-  try {
-    const summary = await livePriceScraper.getMarketSummary();
-    res.json({
-      success: true,
-      data: summary,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching market summary:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// WebSocket endpoint for real-time streaming (optional)
-app.get('/api/live/stream', (req, res) => {
-  res.json({
-    message: 'WebSocket streaming available',
-    websocket_url: 'wss://final-ocai.onrender.com/ws',
-    note: 'Connect via WebSocket for real-time updates'
-  });
-});
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
@@ -774,8 +899,13 @@ app.use((req, res) => {
 });
 
 // ============ START SERVER ============
-const server = app.listen(PORT, () => {
-  console.log(`\n🚀 NEPSE Market Data API running on http://localhost:${PORT}\n📊 Market: http://localhost:${PORT}/api/market/summary\n📅 Events: http://localhost:${PORT}/api/events\n📈 Index: http://localhost:${PORT}/api/index/latest\n📉 Chart: http://localhost:${PORT}/chart\n`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🚀 NEPSE Market Data API running on port ${PORT}`);
+  console.log(`📊 Market Summary: http://localhost:${PORT}/api/market/summary`);
+  console.log(`📈 NEPSE Index: http://localhost:${PORT}/api/index/latest`);
+  console.log(`📅 Events: http://localhost:${PORT}/api/events`);
+  console.log(`📉 Chart: http://localhost:${PORT}/chart`);
+  console.log(`💚 Health: http://localhost:${PORT}/health`);
 });
 
 module.exports = app;

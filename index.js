@@ -1088,7 +1088,125 @@ app.get('/', (req, res) => {
 </body>
 </html>`);
 });
+// ============ BONUS SHARE ENDPOINTS ============
+const bonusScraper = require('./scrapers/events/bonusScraper');
 
+// Get all bonus shares
+app.get('/api/bonus/all', async (req, res) => {
+  try {
+    const { fiscalYear } = req.query;
+    const result = await bonusScraper.fetchBonusShares(fiscalYear);
+    res.json({
+      success: result.success,
+      count: result.count,
+      data: result.data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching bonus shares:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bonus by company
+app.get('/api/bonus/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const bonuses = await bonusScraper.getBonusByCompany(symbol, limit);
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      count: bonuses.length,
+      data: bonuses,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching bonus for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get upcoming bonus
+app.get('/api/bonus/upcoming', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const upcoming = await bonusScraper.getUpcomingBonus(limit);
+    res.json({
+      success: true,
+      count: upcoming.length,
+      data: upcoming,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching upcoming bonus:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bonus history by fiscal year
+app.get('/api/bonus/history/:fiscalYear', async (req, res) => {
+  try {
+    const { fiscalYear } = req.params;
+    const history = await bonusScraper.getBonusHistory(fiscalYear);
+    res.json({
+      success: true,
+      fiscal_year: fiscalYear,
+      count: history.length,
+      data: history,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching bonus history for FY ${req.params.fiscalYear}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bonus statistics
+app.get('/api/bonus/stats/:fiscalYear', async (req, res) => {
+  try {
+    const { fiscalYear } = req.params;
+    const stats = await bonusScraper.getTotalBonusShares(fiscalYear);
+    const history = await bonusScraper.getBonusHistory(fiscalYear);
+    res.json({
+      success: true,
+      fiscal_year: fiscalYear,
+      statistics: stats,
+      top_bonus: history.slice(0, 10),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching bonus stats for FY ${req.params.fiscalYear}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Calculate bonus impact
+app.get('/api/bonus/impact/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { price } = req.query;
+    
+    if (!price) {
+      return res.status(400).json({ error: 'Price parameter required' });
+    }
+    
+    const impact = await bonusScraper.calculateBonusImpact(symbol, parseFloat(price));
+    
+    if (!impact) {
+      return res.status(404).json({ error: 'No bonus data found for symbol' });
+    }
+    
+    res.json({
+      success: true,
+      data: impact,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error calculating bonus impact for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);

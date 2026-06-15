@@ -10,17 +10,44 @@ class MarketSummaryScraper {
   }
 
   /**
+   * Check if market is currently open
+   */
+  isMarketOpen() {
+    const now = new Date();
+    const nepalTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kathmandu' }));
+    const hour = nepalTime.getHours();
+    const day = nepalTime.getDay(); // 0 = Sunday, 1-4 = weekdays, 6 = Saturday
+    
+    // Market open: Sunday to Thursday (0-4), 11 AM to 3 PM
+    const isWeekday = day >= 0 && day <= 4;
+    const isTradingHour = hour >= 11 && hour <= 15;
+    
+    return isWeekday && isTradingHour;
+  }
+
+  /**
+   * Get cache TTL based on market hours
+   */
+  getCacheTTL() {
+    return this.isMarketOpen() ? 2000 : 30000; // 2 seconds during market, 30 seconds when closed
+  }
+
+  /**
    * Fetch complete market summary data
    */
-  async fetchMarketSummary() {
+  async fetchMarketSummary(forceFresh = false) {
     try {
       const cacheKey = 'market_summary';
       const cached = this.cache.get(cacheKey);
+      const cacheTTL = this.getCacheTTL();
       
-      // Return cached data if less than 5 seconds old
-      if (cached && Date.now() - cached.timestamp < 5000) {
+      // Return cached data if not expired and not forcing fresh
+      if (!forceFresh && cached && Date.now() - cached.timestamp < cacheTTL) {
+        logger.debug('Returning cached market summary');
         return cached.data;
       }
+      
+      logger.debug('Fetching fresh market summary from API');
       
       const response = await withRetry(
         () => axios.get(this.MARKET_SUMMARY_API, {
@@ -36,7 +63,6 @@ class MarketSummaryScraper {
       
       const data = response.data;
       
-      // Cache for 5 seconds
       this.cache.set(cacheKey, {
         data: data,
         timestamp: Date.now()
@@ -114,7 +140,7 @@ class MarketSummaryScraper {
    * Get top losers
    */
   async getTopLosers(limit = 10) {
-    const stocks = await getAllStocks();
+    const stocks = await this.getAllStocks();
     return stocks
       .filter(stock => stock.c < 0)
       .sort((a, b) => a.c - b.c)
@@ -129,6 +155,14 @@ class MarketSummaryScraper {
     return stocks
       .sort((a, b) => b.q - a.q)
       .slice(0, limit);
+  }
+
+  /**
+   * Clear cache (useful for manual refresh)
+   */
+  clearCache() {
+    this.cache.clear();
+    logger.info('Market summary cache cleared');
   }
 }
 

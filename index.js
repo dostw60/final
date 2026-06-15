@@ -585,20 +585,184 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    name: 'NEPSE Market Data API', version: '3.0.0', status: 'running',
+    name: 'NEPSE Market Data API',
+    version: '3.0.0',
+    status: 'running',
+    market_data_source: 'MeroLagani',
     endpoints: {
-      market: { summary: 'GET /api/market/summary', overall: 'GET /api/market/overall', turnover: 'GET /api/market/turnover', sectors: 'GET /api/market/sectors', brokers: 'GET /api/market/brokers', gainers: 'GET /api/market/gainers', losers: 'GET /api/market/losers', active: 'GET /api/market/active' },
-      stocks: { all: 'GET /api/stocks', single: 'GET /api/stock/:symbol' },
-      companies: { search: 'GET /api/companies/search?q=NABIL', all: 'GET /api/companies/all', details: 'GET /api/company/:symbol', batch: 'POST /api/companies/batch' },
-      events: { all: 'GET /api/events', upcoming: 'GET /api/events/upcoming?months=3', ipo: 'GET /api/events/ipo', dividends: 'GET /api/events/dividends', agm: 'GET /api/events/agm', rightShare: 'GET /api/events/right-share', byCompany: 'GET /api/events/company/:symbol', stats: 'GET /api/events/stats' },
-      candles: { single: 'GET /api/candles/:symbol?period=1y', bulk: 'POST /api/candles/bulk' },
-      index: { latest: 'GET /api/index/latest', historical: 'GET /api/index/historical' },
-      chart: 'GET /chart', health: 'GET /health'
+      live: {
+        prices: 'GET /api/live/prices?fresh=true - Real-time stock prices',
+        price: 'GET /api/live/price/:symbol - Live price for specific stock',
+        gainers: 'GET /api/live/gainers - Top gainers',
+        losers: 'GET /api/live/losers - Top losers',
+        active: 'GET /api/live/active - Most active stocks',
+        summary: 'GET /api/live/summary - Live market summary'
+      },
+      market: {
+        summary: 'GET /api/market/summary',
+        overall: 'GET /api/market/overall',
+        turnover: 'GET /api/market/turnover',
+        sectors: 'GET /api/market/sectors',
+        brokers: 'GET /api/market/brokers',
+        gainers: 'GET /api/market/gainers',
+        losers: 'GET /api/market/losers',
+        active: 'GET /api/market/active'
+      },
+      stocks: {
+        all: 'GET /api/stocks',
+        single: 'GET /api/stock/:symbol'
+      },
+      companies: {
+        search: 'GET /api/companies/search?q=NABIL',
+        all: 'GET /api/companies/all',
+        details: 'GET /api/company/:symbol',
+        batch: 'POST /api/companies/batch'
+      },
+      events: {
+        all: 'GET /api/events',
+        upcoming: 'GET /api/events/upcoming?months=3',
+        ipo: 'GET /api/events/ipo',
+        dividends: 'GET /api/events/dividends',
+        agm: 'GET /api/events/agm',
+        rightShare: 'GET /api/events/right-share',
+        byCompany: 'GET /api/events/company/:symbol',
+        stats: 'GET /api/events/stats'
+      },
+      candles: {
+        single: 'GET /api/candles/:symbol?period=1y',
+        bulk: 'POST /api/candles/bulk'
+      },
+      index: {
+        latest: 'GET /api/index/latest',
+        historical: 'GET /api/index/historical'
+      },
+      chart: 'GET /chart',
+      health: 'GET /health'
     },
     timestamp: new Date().toISOString()
   });
 });
 
+// ============ LIVE PRICE ENDPOINTS ============
+const livePriceScraper = require('./scrapers/market/livePriceScraper');
+
+// Get all live prices
+app.get('/api/live/prices', async (req, res) => {
+  try {
+    const forceFresh = req.query.fresh === 'true';
+    const prices = await livePriceScraper.getCurrentPrices(forceFresh);
+    res.json({
+      success: true,
+      count: prices.length,
+      data: prices,
+      market_open: livePriceScraper.isMarketOpen(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching live prices:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get live price for specific stock
+app.get('/api/live/price/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const price = await livePriceScraper.getStockPrice(symbol);
+    
+    if (!price) {
+      return res.status(404).json({ error: 'Stock not found' });
+    }
+    
+    res.json({
+      success: true,
+      data: price,
+      market_open: livePriceScraper.isMarketOpen(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`Error fetching live price for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get top gainers
+app.get('/api/live/gainers', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const gainers = await livePriceScraper.getTopGainers(limit);
+    res.json({
+      success: true,
+      count: gainers.length,
+      data: gainers,
+      market_open: livePriceScraper.isMarketOpen(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching gainers:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get top losers
+app.get('/api/live/losers', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const losers = await livePriceScraper.getTopLosers(limit);
+    res.json({
+      success: true,
+      count: losers.length,
+      data: losers,
+      market_open: livePriceScraper.isMarketOpen(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching losers:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get most active stocks
+app.get('/api/live/active', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const active = await livePriceScraper.getMostActive(limit);
+    res.json({
+      success: true,
+      count: active.length,
+      data: active,
+      market_open: livePriceScraper.isMarketOpen(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching active stocks:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get live market summary
+app.get('/api/live/summary', async (req, res) => {
+  try {
+    const summary = await livePriceScraper.getMarketSummary();
+    res.json({
+      success: true,
+      data: summary,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching market summary:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// WebSocket endpoint for real-time streaming (optional)
+app.get('/api/live/stream', (req, res) => {
+  res.json({
+    message: 'WebSocket streaming available',
+    websocket_url: 'wss://final-ocai.onrender.com/ws',
+    note: 'Connect via WebSocket for real-time updates'
+  });
+});
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);

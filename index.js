@@ -791,274 +791,6 @@ app.post('/api/candles/bulk', async (req, res) => {
   }
 });
 
-// ============ DIVIDEND ENDPOINTS ============
-const dividendScraper = require('./scrapers/events/dividendScraper');
-
-app.get('/api/dividends/all', async (req, res) => {
-  try {
-    const { fiscalYear } = req.query;
-    const result = await dividendScraper.fetchDividends(fiscalYear);
-    res.json({
-      success: result.success,
-      count: result.count,
-      data: result.data,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching dividends:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/latest', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 20;
-    const dividends = await dividendScraper.getLatestDividends(limit);
-    res.json({
-      success: true,
-      count: dividends.length,
-      data: dividends,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching latest dividends:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/company/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const limit = parseInt(req.query.limit) || 10;
-    const dividends = await dividendScraper.getDividendsByCompany(symbol, limit);
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      count: dividends.length,
-      data: dividends,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error fetching dividends for ${req.params.symbol}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/fiscal/:year', async (req, res) => {
-  try {
-    const { year } = req.params;
-    const dividends = await dividendScraper.getDividendsByFiscalYear(year);
-    res.json({
-      success: true,
-      fiscal_year: year,
-      count: dividends.length,
-      data: dividends,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error fetching dividends for FY ${req.params.year}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/yield/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { price } = req.query;
-    const result = await dividendScraper.calculateDividendYield(symbol, price ? parseFloat(price) : null);
-    
-    if (!result) {
-      return res.status(404).json({ error: 'No dividend data found for symbol' });
-    }
-    
-    res.json({
-      success: true,
-      data: result,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error calculating dividend yield for ${req.params.symbol}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ BONUS SHARE ENDPOINTS ============
-const bonusScraper = require('./scrapers/events/bonusScraper');
-
-app.get('/api/bonus/all', async (req, res) => {
-  try {
-    const { fiscalYear } = req.query;
-    const result = await bonusScraper.fetchBonusShares(fiscalYear);
-    res.json({
-      success: result.success,
-      count: result.count,
-      data: result.data,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching bonus shares:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/company/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const limit = parseInt(req.query.limit) || 10;
-    const bonuses = await bonusScraper.getBonusByCompany(symbol, limit);
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      count: bonuses.length,
-      data: bonuses,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error fetching bonus for ${req.params.symbol}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/upcoming', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 20;
-    const upcoming = await bonusScraper.getUpcomingBonus(limit);
-    res.json({
-      success: true,
-      count: upcoming.length,
-      data: upcoming,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching upcoming bonus:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/history/:fiscalYear', async (req, res) => {
-  try {
-    const { fiscalYear } = req.params;
-    const history = await bonusScraper.getBonusHistory(fiscalYear);
-    res.json({
-      success: true,
-      fiscal_year: fiscalYear,
-      count: history.length,
-      data: history,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error fetching bonus history for FY ${req.params.fiscalYear}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/stats/:fiscalYear', async (req, res) => {
-  try {
-    const { fiscalYear } = req.params;
-    const stats = await bonusScraper.getTotalBonusShares(fiscalYear);
-    const history = await bonusScraper.getBonusHistory(fiscalYear);
-    res.json({
-      success: true,
-      fiscal_year: fiscalYear,
-      statistics: stats,
-      top_bonus: history.slice(0, 10),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error fetching bonus stats for FY ${req.params.fiscalYear}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/impact/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { price } = req.query;
-    
-    if (!price) {
-      return res.status(400).json({ error: 'Price parameter required' });
-    }
-    
-    const impact = await bonusScraper.calculateBonusImpact(symbol, parseFloat(price));
-    
-    if (!impact) {
-      return res.status(404).json({ error: 'No bonus data found for symbol' });
-    }
-    
-    res.json({
-      success: true,
-      data: impact,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`Error calculating bonus impact for ${req.params.symbol}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ IPO ENDPOINTS ============
-const ipoScraper = require('./scrapers/events/ipoScraper');
-
-app.get('/api/ipo/all', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.fetchIPOData();
-    res.json({
-      success: true,
-      count: ipos.length,
-      data: ipos,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching IPOs:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/ipo/upcoming', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.getUpcomingIPOs();
-    res.json({
-      success: true,
-      count: ipos.length,
-      data: ipos,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching upcoming IPOs:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/ipo/active', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.getActiveIPOs();
-    res.json({
-      success: true,
-      count: ipos.length,
-      data: ipos,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching active IPOs:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/ipo/recent', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.getRecentIPOs();
-    res.json({
-      success: true,
-      count: ipos.length,
-      data: ipos,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error fetching recent IPOs:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // ============ NEPSE INDEX ENDPOINTS ============
 app.get('/api/index/historical', async (req, res) => {
   try {
@@ -1124,84 +856,237 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.json({
-    name: 'NEPSE Market Data API',
-    version: '3.0.0',
-    status: 'running',
-    market_data_source: 'MeroLagani',
-    endpoints: {
-      live: {
-        prices: 'GET /api/live/prices?fresh=true - Real-time stock prices',
-        price: 'GET /api/live/price/:symbol - Live price for specific stock',
-        gainers: 'GET /api/live/gainers - Top gainers',
-        losers: 'GET /api/live/losers - Top losers',
-        active: 'GET /api/live/active - Most active stocks',
-        summary: 'GET /api/live/summary - Live market summary'
-      },
-      ipo: {
-        all: 'GET /api/ipo/all - All IPO announcements',
-        upcoming: 'GET /api/ipo/upcoming - Upcoming IPOs',
-        active: 'GET /api/ipo/active - Currently active IPOs',
-        recent: 'GET /api/ipo/recent - Recent IPOs (last 6 months)'
-      },
-      dividends: {
-        all: 'GET /api/dividends/all - All dividend announcements',
-        latest: 'GET /api/dividends/latest?limit=20 - Latest dividends (6 months)',
-        byCompany: 'GET /api/dividends/company/:symbol - Dividends by company',
-        byFiscalYear: 'GET /api/dividends/fiscal/:year - Dividends by fiscal year',
-        yield: 'GET /api/dividends/yield/:symbol?price=500 - Dividend yield calculation'
-      },
-      bonus: {
-        all: 'GET /api/bonus/all - All bonus announcements',
-        byCompany: 'GET /api/bonus/company/:symbol - Bonus by company',
-        upcoming: 'GET /api/bonus/upcoming - Upcoming bonus announcements',
-        history: 'GET /api/bonus/history/:fiscalYear - Bonus history by fiscal year',
-        stats: 'GET /api/bonus/stats/:fiscalYear - Bonus statistics',
-        impact: 'GET /api/bonus/impact/:symbol?price=500 - Calculate bonus impact on price'
-      },
-      market: {
-        summary: 'GET /api/market/summary',
-        overall: 'GET /api/market/overall',
-        turnover: 'GET /api/market/turnover',
-        sectors: 'GET /api/market/sectors',
-        brokers: 'GET /api/market/brokers',
-        gainers: 'GET /api/market/gainers',
-        losers: 'GET /api/market/losers',
-        active: 'GET /api/market/active'
-      },
-      stocks: {
-        all: 'GET /api/stocks',
-        single: 'GET /api/stock/:symbol'
-      },
-      companies: {
-        search: 'GET /api/companies/search?q=NABIL',
-        all: 'GET /api/companies/all',
-        details: 'GET /api/company/:symbol',
-        batch: 'POST /api/companies/batch'
-      },
-      events: {
-        all: 'GET /api/events',
-        upcoming: 'GET /api/events/upcoming?months=3',
-        ipo: 'GET /api/events/ipo',
-        dividends: 'GET /api/events/dividends',
-        agm: 'GET /api/events/agm',
-        rightShare: 'GET /api/events/right-share',
-        byCompany: 'GET /api/events/company/:symbol',
-        stats: 'GET /api/events/stats'
-      },
-      candles: {
-        single: 'GET /api/candles/:symbol?period=1y',
-        bulk: 'POST /api/candles/bulk'
-      },
-      index: {
-        latest: 'GET /api/index/latest',
-        historical: 'GET /api/index/historical'
-      },
-      chart: 'GET /chart',
-      health: 'GET /health'
-    },
-    timestamp: new Date().toISOString()
-  });
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEPSE Market Data API</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        h1 { font-size: 32px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+        .badge { background: #00ff9d; color: #1a1a2e; padding: 5px 10px; border-radius: 20px; font-size: 14px; font-weight: bold; }
+        .status { color: #00ff9d; margin-top: 10px; }
+        .endpoints-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px; }
+        .card {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: transform 0.3s;
+        }
+        .card:hover { transform: translateY(-5px); background: rgba(255,255,255,0.15); }
+        .card-title {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #00ff9d;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .card-title .emoji { font-size: 24px; }
+        .endpoint-list { list-style: none; }
+        .endpoint-list li {
+            margin-bottom: 12px;
+            padding: 8px;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+        .endpoint-list li:hover { background: rgba(255,255,255,0.1); }
+        .method {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 5px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .method.get { background: #00ff9d; color: #1a1a2e; }
+        .method.post { background: #ffd700; color: #1a1a2e; }
+        .endpoint-url { font-family: monospace; font-size: 13px; word-break: break-all; }
+        .endpoint-url a { color: #fff; text-decoration: none; border-bottom: 1px dashed rgba(255,255,255,0.3); }
+        .endpoint-url a:hover { color: #00ff9d; border-bottom-color: #00ff9d; }
+        .description { font-size: 11px; color: #aaa; margin-top: 5px; margin-left: 65px; }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        @media (max-width: 768px) {
+            .endpoints-grid { grid-template-columns: 1fr; }
+            .description { margin-left: 0; margin-top: 8px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 NEPSE Market Data API <span class="badge">v3.0.0</span></h1>
+            <p>Real-time and historical stock data for Nepal Stock Exchange</p>
+            <div class="status">🟢 Status: Running | Data Source: MeroLagani</div>
+        </div>
+
+        <div class="endpoints-grid">
+            <!-- Live Prices -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">🔴</span>Live Prices</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/prices?fresh=true" target="_blank">${baseUrl}/api/live/prices?fresh=true</a></span><div class="description">Real-time stock prices (use ?fresh=true to bypass cache)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/price/NABIL" target="_blank">${baseUrl}/api/live/price/:symbol</a></span><div class="description">Live price for specific stock (e.g., NABIL, EBL, PRVU)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/gainers" target="_blank">${baseUrl}/api/live/gainers</a></span><div class="description">Top gaining stocks</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/losers" target="_blank">${baseUrl}/api/live/losers</a></span><div class="description">Top losing stocks</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/active" target="_blank">${baseUrl}/api/live/active</a></span><div class="description">Most active stocks by volume</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/summary" target="_blank">${baseUrl}/api/live/summary</a></span><div class="description">Live market summary</div></li>
+                </ul>
+            </div>
+
+            <!-- IPO -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">🚀</span>IPO Announcements</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/all" target="_blank">${baseUrl}/api/ipo/all</a></span><div class="description">All IPO announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/upcoming" target="_blank">${baseUrl}/api/ipo/upcoming</a></span><div class="description">Upcoming IPOs</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/active" target="_blank">${baseUrl}/api/ipo/active</a></span><div class="description">Currently active IPOs</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/recent" target="_blank">${baseUrl}/api/ipo/recent</a></span><div class="description">Recent IPOs (last 6 months)</div></li>
+                </ul>
+            </div>
+
+            <!-- Dividends -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">💰</span>Dividends</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/all" target="_blank">${baseUrl}/api/dividends/all</a></span><div class="description">All dividend announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/latest?limit=20" target="_blank">${baseUrl}/api/dividends/latest?limit=20</a></span><div class="description">Latest dividends (6 months)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/company/NABIL" target="_blank">${baseUrl}/api/dividends/company/:symbol</a></span><div class="description">Dividends by company</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/fiscal/2079/80" target="_blank">${baseUrl}/api/dividends/fiscal/:year</a></span><div class="description">Dividends by fiscal year</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/yield/NABIL?price=500" target="_blank">${baseUrl}/api/dividends/yield/:symbol?price=500</a></span><div class="description">Dividend yield calculation</div></li>
+                </ul>
+            </div>
+
+            <!-- Bonus Shares -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">🎁</span>Bonus Shares</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/all" target="_blank">${baseUrl}/api/bonus/all</a></span><div class="description">All bonus announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/company/NABIL" target="_blank">${baseUrl}/api/bonus/company/:symbol</a></span><div class="description">Bonus by company</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/upcoming" target="_blank">${baseUrl}/api/bonus/upcoming</a></span><div class="description">Upcoming bonus announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/history/2079/80" target="_blank">${baseUrl}/api/bonus/history/:fiscalYear</a></span><div class="description">Bonus history by fiscal year</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/stats/2079/80" target="_blank">${baseUrl}/api/bonus/stats/:fiscalYear</a></span><div class="description">Bonus statistics</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/impact/NABIL?price=500" target="_blank">${baseUrl}/api/bonus/impact/:symbol?price=500</a></span><div class="description">Calculate bonus impact on price</div></li>
+                </ul>
+            </div>
+
+            <!-- Market Data -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">📈</span>Market Data</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/summary" target="_blank">${baseUrl}/api/market/summary</a></span><div class="description">Complete market summary</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/overall" target="_blank">${baseUrl}/api/market/overall</a></span><div class="description">Overall market statistics</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/turnover" target="_blank">${baseUrl}/api/market/turnover</a></span><div class="description">Top turnover leaders</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/sectors" target="_blank">${baseUrl}/api/market/sectors</a></span><div class="description">Sector-wise performance</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/brokers" target="_blank">${baseUrl}/api/market/brokers</a></span><div class="description">Broker-wise performance</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/gainers" target="_blank">${baseUrl}/api/market/gainers</a></span><div class="description">Top gainers</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/losers" target="_blank">${baseUrl}/api/market/losers</a></span><div class="description">Top losers</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/active" target="_blank">${baseUrl}/api/market/active</a></span><div class="description">Most active stocks</div></li>
+                </ul>
+            </div>
+
+            <!-- Stocks -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">📊</span>Stocks</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stocks" target="_blank">${baseUrl}/api/stocks</a></span><div class="description">All stocks data</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stock/NABIL" target="_blank">${baseUrl}/api/stock/:symbol</a></span><div class="description">Specific stock data (e.g., NABIL)</div></li>
+                </ul>
+            </div>
+
+            <!-- Companies -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">🏢</span>Companies</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/search?q=NABIL" target="_blank">${baseUrl}/api/companies/search?q=NABIL</a></span><div class="description">Search companies</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/all" target="_blank">${baseUrl}/api/companies/all</a></span><div class="description">All companies list</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/company/NABIL" target="_blank">${baseUrl}/api/company/:symbol</a></span><div class="description">Company details with market data</div></li>
+                    <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/companies/batch</span><div class="description">Batch company details (POST with JSON body)</div></li>
+                </ul>
+            </div>
+
+            <!-- Events -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">📅</span>Corporate Events</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events" target="_blank">${baseUrl}/api/events</a></span><div class="description">All corporate events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/upcoming?months=3" target="_blank">${baseUrl}/api/events/upcoming?months=3</a></span><div class="description">Upcoming events (next 3 months)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/ipo" target="_blank">${baseUrl}/api/events/ipo</a></span><div class="description">IPO events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/dividends" target="_blank">${baseUrl}/api/events/dividends</a></span><div class="description">Dividend events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/agm" target="_blank">${baseUrl}/api/events/agm</a></span><div class="description">AGM events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/right-share" target="_blank">${baseUrl}/api/events/right-share</a></span><div class="description">Right share events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/company/NABIL" target="_blank">${baseUrl}/api/events/company/:symbol</a></span><div class="description">Events by company</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/stats" target="_blank">${baseUrl}/api/events/stats</a></span><div class="description">Event statistics</div></li>
+                </ul>
+            </div>
+
+            <!-- Candles -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">🕯️</span>Historical Candles</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/candles/NABIL?period=1y" target="_blank">${baseUrl}/api/candles/:symbol?period=1y</a></span><div class="description">Historical OHLC data (period: 1w,1m,3m,6m,1y,2y,3y,5y)</div></li>
+                    <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/candles/bulk</span><div class="description">Bulk candles for multiple symbols (max 50)</div></li>
+                </ul>
+            </div>
+
+            <!-- NEPSE Index -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">📉</span>NEPSE Index</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/latest" target="_blank">${baseUrl}/api/index/latest</a></span><div class="description">Latest NEPSE Index value</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/historical?limit=100" target="_blank">${baseUrl}/api/index/historical?limit=100</a></span><div class="description">Historical index data (2814 records)</div></li>
+                </ul>
+            </div>
+
+            <!-- Charts -->
+            <div class="card">
+                <div class="card-title"><span class="emoji">📊</span>Charts & Health</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart" target="_blank">${baseUrl}/chart</a></span><div class="description">Interactive SOPAN candlestick chart</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/health" target="_blank">${baseUrl}/health</a></span><div class="description">API health check</div></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>🚀 NEPSE Market Data API | Real-time data from MeroLagani | Cached for performance</p>
+            <p>💡 Tip: Use ?fresh=true to bypass cache and get latest data</p>
+            <p>📅 Last Updated: ${new Date().toISOString()}</p>
+        </div>
+    </div>
+</body>
+</html>`);
 });
 
 // ============ ERROR HANDLING ============

@@ -648,13 +648,66 @@ app.get('/api/events/dividends', async (req, res) => {
 
 app.get('/api/events/agm', async (req, res) => {
   try {
-    const { limit = 50 } = req.query;
+    const { limit = 50, fresh = false } = req.query;
     const now = new Date();
-    const fromDate = `1/1/${now.getFullYear()}`;
-    const toDate = `12/31/${now.getFullYear() + 1}`;
-    const events = await fetchStockEvents(fromDate, toDate);
-    const agmEvents = events.filter(event => event.announcementDetail.toLowerCase().includes('agm')).slice(0, parseInt(limit));
-    res.json({ success: true, count: agmEvents.length, data: agmEvents, timestamp: new Date().toISOString() });
+    
+    // Use a wider date range to ensure all data is captured
+    const fromDate = `1/1/2025`;  // Fixed from 2025
+    const toDate = `12/31/2027`;   // Fixed to 2027
+    
+    const cacheKey = `agm_events_2025_2027`;
+    
+    // Skip cache if fresh=true
+    let events;
+    if (fresh === 'true') {
+      const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+        params: { type: 'stock_event', fromDate: fromDate, toDate: toDate },
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+      });
+      events = response.data.detail || [];
+      cache.set(cacheKey, { data: events, timestamp: Date.now() });
+    } else {
+      const cached = cache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 3600000) {
+        events = cached.data;
+      } else {
+        const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+          params: { type: 'stock_event', fromDate: fromDate, toDate: toDate },
+          timeout: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+        });
+        events = response.data.detail || [];
+        cache.set(cacheKey, { data: events, timestamp: Date.now() });
+      }
+    }
+    
+    // Filter AGM events (case insensitive)
+    const agmEvents = events.filter(event => 
+      event.announcementDetail.toLowerCase().includes('agm')
+    );
+    
+    // Sort by date (newest first)
+    agmEvents.sort((a, b) => new Date(b.actionDate) - new Date(a.actionDate));
+    
+    const limited = agmEvents.slice(0, parseInt(limit));
+    
+    // Find Tarakhola specifically for debugging
+    const tarakholaEvents = agmEvents.filter(event => 
+      event.announcementDetail.toLowerCase().includes('tarakhola')
+    );
+    
+    res.json({
+      success: true,
+      count: limited.length,
+      total_available: agmEvents.length,
+      date_range: { from: fromDate, to: toDate },
+      tarakhola_found: tarakholaEvents.length,
+      tarakhola_data: tarakholaEvents,
+      data: limited,
+      timestamp: new Date().toISOString()
+    });
+    
   } catch (error) {
     console.error('Error fetching AGM events:', error.message);
     res.status(500).json({ error: error.message });

@@ -1,55 +1,483 @@
-<!-- Save as dashboard.html -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>NEPSE Market Dashboard</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEPSE Market Dashboard - SOPAN Candlestick Chart</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.js"></script>
     <style>
-        body { font-family: Arial; margin: 20px; background: #f0f0f0; }
-        .container { max-width: 1200px; margin: auto; }
-        .card { background: white; padding: 20px; margin: 10px; border-radius: 8px; }
-        .stock { display: inline-block; width: 200px; margin: 10px; padding: 15px; background: #f9f9f9; border-radius: 8px; }
-        .positive { color: green; }
-        .negative { color: red; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #fff;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 28px;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #ffd700;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-top: 5px;
+        }
+
+        .chart-section {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .chart-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .period-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .period-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .period-btn:hover, .period-btn.active {
+            background: #ffd700;
+            color: #1a1a2e;
+            font-weight: bold;
+        }
+
+        #chart-container {
+            width: 100%;
+            height: 500px;
+            background: #1a1a2e;
+            border-radius: 10px;
+            position: relative;
+        }
+
+        .stock-info {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 14px;
+        }
+
+        .stocks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stock-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .stock-card:hover {
+            background: rgba(255, 255, 255, 0.15);
+            transform: translateY(-3px);
+        }
+
+        .positive { color: #4caf50; }
+        .negative { color: #f44336; }
+
+        .refresh-btn {
+            background: #ffd700;
+            color: #1a1a2e;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .last-updated {
+            text-align: center;
+            font-size: 12px;
+            opacity: 0.6;
+            margin-top: 20px;
+        }
+
+        .debug {
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            margin-top: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .sample-candles {
+            background: rgba(0,0,0,0.3);
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 11px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 NEPSE Market Dashboard</h1>
-        <div id="stocks" class="card"></div>
+        <div class="header">
+            <h1>
+                📊 NEPSE Market Dashboard
+                <button class="refresh-btn" onclick="refreshAllData()">🔄 Refresh</button>
+            </h1>
+            <div>SOPAN Pharmaceuticals Candlestick Chart</div>
+        </div>
+
+        <div id="stats" class="stats-grid"></div>
+
+        <div class="chart-section">
+            <div class="chart-title">
+                <div>📈 SOPAN (Sopan Pharmaceuticals Limited) - SOPL</div>
+                <div class="period-buttons">
+                    <button class="period-btn" onclick="changePeriod('1w')">1W</button>
+                    <button class="period-btn active" onclick="changePeriod('1m')">1M</button>
+                    <button class="period-btn" onclick="changePeriod('3m')">3M</button>
+                    <button class="period-btn" onclick="changePeriod('6m')">6M</button>
+                    <button class="period-btn" onclick="changePeriod('1y')">1Y</button>
+                </div>
+            </div>
+            <div id="chart-container"></div>
+            <div id="stock-info" class="stock-info">Loading SOPAN data...</div>
+            <div id="sample-data" class="sample-candles"></div>
+            <div id="debug" class="debug"></div>
+        </div>
+
+        <div class="chart-section">
+            <h3>🏦 Other Active Stocks</h3>
+            <div id="stocks" class="stocks-grid">Loading...</div>
+        </div>
+
+        <div id="last-updated" class="last-updated"></div>
     </div>
+
     <script>
-        async function loadData() {
+        let chart = null;
+        let candleSeries = null;
+        let currentPeriod = '1m';
+
+        function log(msg) {
+            const debugDiv = document.getElementById('debug');
+            debugDiv.innerHTML += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+            debugDiv.scrollTop = debugDiv.scrollHeight;
+            console.log(msg);
+        }
+
+        function initChart() {
+            log('Initializing chart...');
+            const container = document.getElementById('chart-container');
+            
+            if (chart) {
+                chart.remove();
+                chart = null;
+            }
+            
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth,
+                height: 500,
+                layout: {
+                    background: { color: '#1a1a2e' },
+                    textColor: '#d1d4dc',
+                },
+                grid: {
+                    vertLines: { color: 'rgba(42, 46, 57, 0.6)' },
+                    horzLines: { color: 'rgba(42, 46, 57, 0.6)' },
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                },
+                rightPriceScale: {
+                    borderColor: 'rgba(197, 203, 206, 0.4)',
+                },
+                timeScale: {
+                    borderColor: 'rgba(197, 203, 206, 0.4)',
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+            });
+            
+            candleSeries = chart.addCandlestickSeries({
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+                borderColor: '#26a69a',
+            });
+            
+            log('Chart and candlestick series initialized successfully');
+            
+            window.addEventListener('resize', () => {
+                if (chart) {
+                    chart.applyOptions({ width: container.clientWidth });
+                }
+            });
+        }
+
+        async function fetchCandles(symbol, period) {
+            log(`Fetching ${symbol} data for period: ${period}`);
+            try {
+                const response = await fetch('https://final-ocai.onrender.com/api/candles/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: [symbol], period: period })
+                });
+                const data = await response.json();
+                log(`API Response: ${data.successful} symbols returned, ${data.data[0]?.data?.length || 0} candles`);
+                
+                if (data.success && data.data && data.data[0] && data.data[0].success) {
+                    return data.data[0].data;
+                }
+                return [];
+            } catch (error) {
+                log(`Error: ${error.message}`);
+                return [];
+            }
+        }
+
+        async function updateSOPANChart() {
+            log(`Updating SOPAN chart for period: ${currentPeriod}`);
+            const candles = await fetchCandles('SOPL', currentPeriod);
+            
+            const infoDiv = document.getElementById('stock-info');
+            const sampleDiv = document.getElementById('sample-data');
+            
+            if (candles && candles.length > 0) {
+                // Format data for chart with proper date objects
+                const chartData = candles.map(c => ({
+                    time: c.date,  // lightweight-charts accepts ISO date strings
+                    open: c.open,
+                    high: c.high,
+                    low: c.low,
+                    close: c.close
+                }));
+                
+                log(`Rendering ${chartData.length} candles on chart`);
+                log(`Sample candle: ${JSON.stringify(chartData[0])}`);
+                
+                // Show sample data
+                sampleDiv.innerHTML = `<strong>Sample Data (first candle):</strong><br>
+                    Date: ${chartData[0].time}<br>
+                    Open: ${chartData[0].open}<br>
+                    High: ${chartData[0].high}<br>
+                    Low: ${chartData[0].low}<br>
+                    Close: ${chartData[0].close}<br>
+                    <br>
+                    <strong>All Dates:</strong> ${chartData.map(d => d.time).join(', ')}`;
+                
+                if (candleSeries) {
+                    candleSeries.setData(chartData);
+                    chart.timeScale().fitContent();
+                    log('Chart data set successfully');
+                } else {
+                    log('ERROR: candleSeries is null, reinitializing chart...');
+                    initChart();
+                    candleSeries.setData(chartData);
+                    chart.timeScale().fitContent();
+                }
+                
+                const latest = candles[candles.length - 1];
+                const first = candles[0];
+                const change = ((latest.close - first.close) / first.close * 100).toFixed(2);
+                const changeClass = change >= 0 ? 'positive' : 'negative';
+                
+                infoDiv.innerHTML = `
+                    📊 <strong>SOPAN Pharmaceuticals Limited (SOPL)</strong><br>
+                    Current Price: <strong style="color:#ffd700">Rs. ${latest.close}</strong><br>
+                    Change (${currentPeriod}): <span class="${changeClass}">${change >= 0 ? '▲' : '▼'} ${Math.abs(change)}%</span><br>
+                    52W Range: Rs. ${Math.min(...candles.map(c => c.low))} - Rs. ${Math.max(...candles.map(c => c.high))}<br>
+                    Total Volume: ${candles.reduce((s, c) => s + c.volume, 0).toLocaleString()}<br>
+                    Candles: ${candles.length}
+                `;
+            } else {
+                infoDiv.innerHTML = `⚠️ No data available for SOPAN (SOPL). Try a different period or check if the stock symbol is correct.`;
+                sampleDiv.innerHTML = 'No data received from API';
+                log('No candle data received');
+            }
+        }
+
+        async function loadMarketData() {
+            log('Loading market data...');
+            const symbols = ['NABIL', 'EBL', 'PRVU', 'NIB', 'GBIME', 'SANIMA', 'NICA'];
             const response = await fetch('https://final-ocai.onrender.com/api/candles/bulk', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    symbols: ['NABIL', 'EBL', 'PRVU', 'NIB', 'GBIME', 'SANIMA', 'NICA'],
-                    period: '1m'
-                })
+                body: JSON.stringify({ symbols: symbols, period: '1m' })
             });
             const data = await response.json();
             
-            const stocksDiv = document.getElementById('stocks');
-            stocksDiv.innerHTML = '<h2>Latest Stock Prices</h2>';
+            // Stats
+            let totalVol = 0, totalChange = 0, advancing = 0, totalPrice = 0;
+            let count = 0;
             
             data.data.forEach(stock => {
-                const latest = stock.data[stock.data.length - 1];
-                const first = stock.data[0];
-                const change = ((latest.close - first.close) / first.close * 100).toFixed(2);
-                const changeClass = change >= 0 ? 'positive' : 'negative';
-                const arrow = change >= 0 ? '▲' : '▼';
-                
-                stocksDiv.innerHTML += `
-                    <div class="stock">
-                        <h3>${stock.symbol}</h3>
-                        <p>Price: <strong>Rs. ${latest.close}</strong></p>
-                        <p class="${changeClass}">${arrow} ${Math.abs(change)}% (20 days)</p>
-                        <p>Volume: ${latest.volume.toLocaleString()}</p>
-                    </div>
-                `;
+                if (stock.success && stock.data && stock.data.length > 0) {
+                    const latest = stock.data[stock.data.length - 1];
+                    const first = stock.data[0];
+                    const change = ((latest.close - first.close) / first.close * 100);
+                    totalVol += latest.volume;
+                    totalChange += change;
+                    totalPrice += latest.close;
+                    count++;
+                    if (change > 0) advancing++;
+                }
+            });
+            
+            document.getElementById('stats').innerHTML = `
+                <div class="stat-card"><div class="stat-value">${count}</div><div class="stat-label">Stocks</div></div>
+                <div class="stat-card"><div class="stat-value">${advancing}</div><div class="stat-label">Advancing</div></div>
+                <div class="stat-card"><div class="stat-value">${(totalVol/1e6).toFixed(1)}M</div><div class="stat-label">Volume</div></div>
+                <div class="stat-card"><div class="stat-value">${(totalChange/count).toFixed(1)}%</div><div class="stat-label">Avg Change</div></div>
+            `;
+            
+            // Stocks grid
+            const stocksDiv = document.getElementById('stocks');
+            stocksDiv.innerHTML = '';
+            data.data.forEach(stock => {
+                if (stock.success && stock.data && stock.data.length > 0) {
+                    const latest = stock.data[stock.data.length - 1];
+                    const first = stock.data[0];
+                    const change = ((latest.close - first.close) / first.close * 100).toFixed(2);
+                    stocksDiv.innerHTML += `
+                        <div class="stock-card" onclick="alert('${stock.symbol}\\nPrice: Rs. ${latest.close}\\nChange: ${change}%\\nVolume: ${latest.volume.toLocaleString()}')">
+                            <div style="font-weight:bold">${stock.symbol}</div>
+                            <div style="font-size:24px;color:#ffd700;margin:10px 0">Rs. ${latest.close}</div>
+                            <div class="${change >= 0 ? 'positive' : 'negative'}">${change >= 0 ? '▲' : '▼'} ${Math.abs(change)}%</div>
+                            <div style="font-size:11px;opacity:0.7;margin-top:5px">Vol: ${latest.volume.toLocaleString()}</div>
+                        </div>
+                    `;
+                }
             });
         }
-        loadData();
+
+        async function refreshAllData() {
+            log('=== REFRESHING ALL DATA ===');
+            document.getElementById('stocks').innerHTML = 'Loading...';
+            await loadMarketData();
+            await updateSOPANChart();
+            document.getElementById('last-updated').innerHTML = `Last updated: ${new Date().toLocaleString()}`;
+            log('Refresh complete');
+        }
+
+        function changePeriod(period) {
+            log(`Changing period to: ${period}`);
+            currentPeriod = period;
+            document.querySelectorAll('.period-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.innerText === period.toUpperCase() || 
+                    (period === '1m' && btn.innerText === '1M') ||
+                    (period === '3m' && btn.innerText === '3M') ||
+                    (period === '6m' && btn.innerText === '6M') ||
+                    (period === '1y' && btn.innerText === '1Y') ||
+                    (period === '1w' && btn.innerText === '1W')) {
+                    btn.classList.add('active');
+                }
+            });
+            updateSOPANChart();
+        }
+
+        // Force a test candle to verify chart works
+        function testChart() {
+            log('Testing chart with sample data...');
+            if (candleSeries) {
+                const testData = [
+                    { time: '2026-06-10', open: 500, high: 520, low: 490, close: 515 },
+                    { time: '2026-06-11', open: 515, high: 530, low: 510, close: 525 },
+                    { time: '2026-06-12', open: 525, high: 540, low: 520, close: 535 },
+                ];
+                candleSeries.setData(testData);
+                chart.timeScale().fitContent();
+                log('Test candles rendered successfully!');
+                return true;
+            }
+            return false;
+        }
+
+        // Initialize and run
+        initChart();
+        
+        // Test chart with sample data first
+        setTimeout(() => {
+            log('Running chart test...');
+            testChart();
+        }, 1000);
+        
+        // Then load real data
+        setTimeout(() => {
+            refreshAllData();
+        }, 2000);
+        
+        setInterval(refreshAllData, 60000);
     </script>
 </body>
 </html>

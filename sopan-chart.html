@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NABIL Bank - Candlestick Chart</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #0a0e27;
+            color: #fff;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #ffd700;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        
+        /* Candlestick Container */
+        .candlestick-container {
+            background: #131722;
+            border-radius: 10px;
+            padding: 30px;
+            margin-bottom: 30px;
+            overflow-x: auto;
+            border: 1px solid #2a2e39;
+        }
+        .candles-wrapper {
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            min-width: max-content;
+            padding: 20px 0;
+        }
+        .candle {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 80px;
+        }
+        .candle-visual {
+            position: relative;
+            width: 100%;
+            height: 300px;
+            margin-bottom: 10px;
+        }
+        .wick {
+            position: absolute;
+            width: 2px;
+            background: #888;
+            left: 50%;
+            transform: translateX(-50%);
+            border-radius: 1px;
+        }
+        .body {
+            position: absolute;
+            width: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .body:hover {
+            opacity: 0.8;
+            transform: translateX(-50%) scaleX(1.1);
+        }
+        .candle-up .body { background: #00ff9d; }
+        .candle-down .body { background: #ff4d4d; }
+        .candle-up .wick { background: #00ff9d; }
+        .candle-down .wick { background: #ff4d4d; }
+        
+        .candle-date {
+            font-size: 10px;
+            color: #888;
+            margin-top: 8px;
+        }
+        .candle-price {
+            font-size: 11px;
+            font-weight: bold;
+            color: #ffd700;
+        }
+        
+        /* Stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #131722;
+            border: 1px solid #2a2e39;
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #ffd700;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #888;
+            margin-top: 5px;
+        }
+        .positive { color: #00ff9d; }
+        .negative { color: #ff4d4d; }
+        
+        /* Table */
+        .table-container {
+            background: #131722;
+            border-radius: 10px;
+            overflow-x: auto;
+            border: 1px solid #2a2e39;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            background: #1e222d;
+            padding: 12px;
+            text-align: center;
+            font-size: 12px;
+            color: #ffd700;
+            border-bottom: 1px solid #2a2e39;
+        }
+        td {
+            padding: 8px 12px;
+            text-align: center;
+            border-bottom: 1px solid #2a2e39;
+            font-size: 11px;
+        }
+        tr:hover { background: #1e222d; }
+        .green { color: #00ff9d; }
+        .red { color: #ff4d4d; }
+        
+        .controls {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #2a2e39;
+            border: none;
+            color: #fff;
+            padding: 8px 16px;
+            margin: 0 5px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button.active {
+            background: #00ff9d;
+            color: #000;
+        }
+        .loading {
+            text-align: center;
+            padding: 50px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏦 NABIL Bank Limited</h1>
+        <div class="subtitle">NABIL | Candlestick Pattern Analysis | 223 Trading Days</div>
+
+        <div class="controls">
+            <button class="period-btn active" data-period="all">All (223)</button>
+            <button class="period-btn" data-period="3m">Last 3 Months</button>
+            <button class="period-btn" data-period="1m">Last 1 Month</button>
+            <button class="period-btn" data-period="2w">Last 2 Weeks</button>
+        </div>
+
+        <div id="loading" class="loading">🔄 Loading 223 candles from API...</div>
+        
+        <div id="candlestick-container" class="candlestick-container" style="display:none">
+            <div id="candles-wrapper" class="candles-wrapper"></div>
+        </div>
+
+        <div id="stats" class="stats-grid"></div>
+        <div id="table-container" class="table-container" style="display:none"></div>
+    </div>
+
+    <script>
+        let fullCandleData = [];
+
+        async function fetchNABILData() {
+            try {
+                const response = await fetch('https://final-ocai.onrender.com/api/candles/NABIL?period=1y');
+                const data = await response.json();
+                if (data.success && data.data) {
+                    fullCandleData = data.data;
+                    console.log(`✅ Loaded ${fullCandleData.length} candles`);
+                    return fullCandleData;
+                }
+                throw new Error('No data received');
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('loading').innerHTML = '❌ Failed to load data. Please check if the API is running.';
+                return [];
+            }
+        }
+
+        function findMinMaxPrices(data) {
+            let minPrice = Infinity;
+            let maxPrice = -Infinity;
+            data.forEach(c => {
+                if (c.high > maxPrice) maxPrice = c.high;
+                if (c.low < minPrice) minPrice = c.low;
+            });
+            return { minPrice, maxPrice, range: maxPrice - minPrice };
+        }
+
+        function renderCandles(data) {
+            const container = document.getElementById('candles-wrapper');
+            container.innerHTML = '';
+            
+            if (!data || data.length === 0) return;
+            
+            const { minPrice, range } = findMinMaxPrices(data);
+            const chartHeight = 280;
+            
+            data.forEach(candle => {
+                const isUp = candle.close >= candle.open;
+                const bodyHeight = Math.abs(candle.close - candle.open);
+                const scaledBodyHeight = range > 0 ? (bodyHeight / range) * chartHeight : 20;
+                const bodyBottom = range > 0 ? ((Math.min(candle.open, candle.close) - minPrice) / range) * chartHeight : 0;
+                const wickTopHeight = range > 0 ? ((candle.high - Math.max(candle.open, candle.close)) / range) * chartHeight : 0;
+                const wickBottomHeight = range > 0 ? ((Math.min(candle.open, candle.close) - candle.low) / range) * chartHeight : 0;
+                const change = ((candle.close - candle.open) / candle.open * 100).toFixed(2);
+                
+                const candleDiv = document.createElement('div');
+                candleDiv.className = `candle ${isUp ? 'candle-up' : 'candle-down'}`;
+                candleDiv.style.cursor = 'pointer';
+                candleDiv.title = `${candle.date}\nOpen: ${candle.open}\nHigh: ${candle.high}\nLow: ${candle.low}\nClose: ${candle.close}\nChange: ${change}%\nVolume: ${candle.volume.toLocaleString()}`;
+                
+                candleDiv.innerHTML = `
+                    <div class="candle-visual">
+                        <div class="wick" style="height: ${Math.max(wickTopHeight, 1)}px; bottom: ${bodyBottom + scaledBodyHeight}px"></div>
+                        <div class="body" style="height: ${Math.max(scaledBodyHeight, 2)}px; bottom: ${bodyBottom}px"></div>
+                        <div class="wick" style="height: ${Math.max(wickBottomHeight, 1)}px; bottom: ${bodyBottom - wickBottomHeight}px"></div>
+                    </div>
+                    <div class="candle-date">${candle.date.slice(5)}</div>
+                    <div class="candle-price">${candle.close}</div>
+                `;
+                
+                candleDiv.onclick = () => alert(`${candle.date}\nOpen: ${candle.open}\nHigh: ${candle.high}\nLow: ${candle.low}\nClose: ${candle.close}\nChange: ${change}%\nVolume: ${candle.volume.toLocaleString()}`);
+                
+                container.appendChild(candleDiv);
+            });
+        }
+
+        function renderStats(data) {
+            if (!data || data.length === 0) return;
+            
+            const first = data[0];
+            const last = data[data.length - 1];
+            const totalChange = ((last.close - first.open) / first.open * 100).toFixed(2);
+            const highest = Math.max(...data.map(c => c.high));
+            const lowest = Math.min(...data.map(c => c.low));
+            const totalVolume = data.reduce((sum, c) => sum + c.volume, 0);
+            const avgVolume = Math.round(totalVolume / data.length);
+            const greenCandles = data.filter(c => c.close > c.open).length;
+            const redCandles = data.length - greenCandles;
+            const maxVolumeCandle = data.reduce((max, c) => c.volume > max.volume ? c : max, data[0]);
+            
+            document.getElementById('stats').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value ${totalChange >= 0 ? 'positive' : 'negative'}">${totalChange >= 0 ? '+' : ''}${totalChange}%</div>
+                    <div class="stat-label">Total Return</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value positive">Rs. ${highest.toFixed(2)}</div>
+                    <div class="stat-label">Highest Price</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value negative">Rs. ${lowest.toFixed(2)}</div>
+                    <div class="stat-label">Lowest Price</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${avgVolume.toLocaleString()}</div>
+                    <div class="stat-label">Avg Daily Volume</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value ${greenCandles > redCandles ? 'positive' : 'negative'}">${greenCandles}/${redCandles}</div>
+                    <div class="stat-label">Green/Red Ratio</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${data.length}</div>
+                    <div class="stat-label">Trading Days</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${(highest - lowest).toFixed(2)}</div>
+                    <div class="stat-label">Price Range (Rs.)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${maxVolumeCandle.volume.toLocaleString()}</div>
+                    <div class="stat-label">Peak Volume (${maxVolumeCandle.date})</div>
+                </div>
+            `;
+        }
+
+        function renderTable(data) {
+            const container = document.getElementById('table-container');
+            container.style.display = 'block';
+            
+            const tableHtml = `
+                <table>
+                    <thead>
+                        <tr><th>Date</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Change</th><th>Volume</th><th>Range</th></tr>
+                    </thead>
+                    <tbody>
+                        ${data.slice().reverse().map(candle => {
+                            const change = ((candle.close - candle.open) / candle.open * 100).toFixed(2);
+                            const isUp = change >= 0;
+                            return `
+                                <tr>
+                                    <td>${candle.date}</td>
+                                    <td>${candle.open.toFixed(2)}</td>
+                                    <td class="green">${candle.high.toFixed(2)}</td>
+                                    <td class="red">${candle.low.toFixed(2)}</td>
+                                    <td><strong>${candle.close.toFixed(2)}</strong></td>
+                                    <td class="${isUp ? 'green' : 'red'}">${isUp ? '▲' : '▼'} ${Math.abs(change)}%</td>
+                                    <td>${candle.volume.toLocaleString()}</td>
+                                    <td>${(candle.high - candle.low).toFixed(2)}</td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+            container.innerHTML = tableHtml;
+        }
+
+        function filterDataByPeriod(data, period) {
+            if (period === 'all') return data;
+            
+            const now = new Date();
+            let cutoffDate = new Date();
+            
+            if (period === '3m') cutoffDate.setMonth(now.getMonth() - 3);
+            if (period === '1m') cutoffDate.setMonth(now.getMonth() - 1);
+            if (period === '2w') cutoffDate.setDate(now.getDate() - 14);
+            
+            return data.filter(candle => new Date(candle.date) >= cutoffDate);
+        }
+
+        async function updateDisplay(period = 'all') {
+            if (fullCandleData.length === 0) {
+                await fetchNABILData();
+            }
+            
+            const filteredData = filterDataByPeriod(fullCandleData, period);
+            
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('candlestick-container').style.display = 'block';
+            
+            renderCandles(filteredData);
+            renderStats(filteredData);
+            renderTable(filteredData);
+            
+            document.getElementById('stats').style.display = 'grid';
+        }
+
+        // Setup period buttons
+        document.querySelectorAll('.period-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const period = btn.dataset.period;
+                await updateDisplay(period);
+            });
+        });
+
+        // Initial load
+        updateDisplay('all');
+    </script>
+</body>
+</html>

@@ -21,6 +21,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Serve static files (for charts, etc.)
+app.use(express.static('public'));
+
 // Helper function to calculate start date based on period
 function getStartDate(period) {
   const date = new Date();
@@ -951,6 +954,355 @@ app.post('/api/candles/bulk', async (req, res) => {
   }
 });
 
+// ============ NEPSE INDEX ENDPOINTS ============
+
+// Get historical NEPSE Index data
+app.get('/api/index/historical', async (req, res) => {
+  try {
+    const { limit = 100, page = 1 } = req.query;
+    
+    const cacheKey = `nepse_index_historical_page_${page}_limit_${limit}`;
+    const cached = cache.get(cacheKey);
+    
+    if (cached && Date.now() - cached.timestamp < 3600000) {
+      return res.json(cached.data);
+    }
+    
+    // Fetch the Indices page from MeroLagani
+    const response = await axios.get('https://merolagani.com/Indices.aspx', {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml'
+      }
+    });
+    
+    const html = response.data;
+    
+    // Extract the table data using regex
+    const tableRegex = /<td[^>]*>([\d\-/]+)<\/td>\s*<td[^>]*>([\d,]+\.?\d*)<\/td>\s*<td[^>]*>(-?[\d,]+\.?\d*)<\/td>\s*<td[^>]*>(-?[\d,]+\.?\d*%)<\/td>/g;
+    
+    const indices = [];
+    let match;
+    
+    while ((match = tableRegex.exec(html)) !== null) {
+      indices.push({
+        date: match[1],
+        index_value: parseFloat(match[2].replace(/,/g, '')),
+        absolute_change: parseFloat(match[3].replace(/,/g, '')),
+        percentage_change: match[4]
+      });
+    }
+    
+    // Apply pagination
+    const start = (parseInt(page) - 1) * parseInt(limit);
+    const end = start + parseInt(limit);
+    const paginatedData = indices.slice(start, end);
+    
+    // Get latest index (first row)
+    const latest = indices[0] || null;
+    
+    // Calculate basic statistics
+    const values = indices.map(i => i.index_value);
+    const highest = Math.max(...values);
+    const lowest = Math.min(...values);
+    const average = (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2);
+    
+    const result = {
+      success: true,
+      source: 'merolagani',
+      data: {
+        latest: latest,
+        statistics: {
+          highest: highest,
+          lowest: lowest,
+          average: parseFloat(average),
+          total_records: indices.length
+        },
+        historical: paginatedData,
+        pagination: {
+          current_page: parseInt(page),
+          limit: parseInt(limit),
+          total_pages: Math.ceil(indices.length / parseInt(limit)),
+          total_records: indices.length
+        }
+      },
+      timestamp: new Date().toISOString()
+    };
+    
+    cache.set(cacheKey, { data: result, timestamp: Date.now() });
+    res.json(result);
+    
+  } catch (error) {
+    console.error('Error fetching NEPSE index data:', error.message);
+    res.status(500).json({ error: 'Failed to fetch index data', message: error.message });
+  }
+});
+
+// Get latest NEPSE Index only
+app.get('/api/index/latest', async (req, res) => {
+  try {
+    const cacheKey = 'nepse_index_latest';
+    const cached = cache.get(cacheKey);
+    
+    if (cached && Date.now() - cached.timestamp < 3600000) {
+      return res.json(cached.data);
+    }
+    
+    const response = await axios.get('https://merolagani.com/Indices.aspx', {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': 'text/html'
+      }
+    });
+    
+    const html = response.data;
+    
+    // Extract the first row (latest index)
+    const firstRowRegex = /<tr[^>]*>[\s\S]*?<td[^>]*>([\d\-/]+)<\/td>[\s\S]*?<td[^>]*>([\d,]+\.?\d*)<\/td>[\s\S]*?<td[^>]*>(-?[\d,]+\.?\d*)<\/td>[\s\S]*?<td[^>]*>(-?[\d,]+\.?\d*%)<\/td>/;
+    const match = html.match(firstRowRegex);
+    
+    if (!match) {
+      throw new Error('Could not parse index data');
+    }
+    
+    const result = {
+      success: true,
+      data: {
+        date: match[1],
+        index_value: parseFloat(match[2].replace(/,/g, '')),
+        absolute_change: parseFloat(match[3].replace(/,/g, '')),
+        percentage_change: match[4]
+      },
+      timestamp: new Date().toISOString()
+    };
+    
+    cache.set(cacheKey, { data: result, timestamp: Date.now() });
+    res.json(result);
+    
+  } catch (error) {
+    console.error('Error fetching latest index:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ CHART ENDPOINT (SOPAN Candlestick Chart) ============
+app.get('/chart', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>SOPAN Candlestick Chart - NEPSE</title>
+        <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.js"></script>
+        <style>
+            body {
+                margin: 0;
+                padding: 20px;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: #1a1a2e;
+                color: #fff;
+            }
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 20px;
+            }
+            #chart-container {
+                width: 100%;
+                height: 600px;
+                background: #1a1a2e;
+                border-radius: 10px;
+                margin-bottom: 20px;
+            }
+            .controls {
+                text-align: center;
+                margin-bottom: 20px;
+            }
+            button {
+                background: #ffd700;
+                color: #1a1a2e;
+                border: none;
+                padding: 10px 20px;
+                margin: 0 5px;
+                border-radius: 5px;
+                cursor: pointer;
+                font-weight: bold;
+            }
+            button.active {
+                background: #ffaa00;
+                transform: scale(1.05);
+            }
+            .info {
+                background: rgba(255,255,255,0.1);
+                padding: 15px;
+                border-radius: 10px;
+                margin-top: 20px;
+            }
+            .price {
+                font-size: 24px;
+                color: #ffd700;
+            }
+            .positive { color: #4caf50; }
+            .negative { color: #f44336; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>📈 SOPAN Pharmaceuticals Limited (SOPL)</h1>
+                <p>NEPSE Candlestick Chart - Live Data from MeroLagani API</p>
+            </div>
+            
+            <div class="controls">
+                <button class="period-btn" data-period="1w">1 Week</button>
+                <button class="period-btn active" data-period="1m">1 Month</button>
+                <button class="period-btn" data-period="3m">3 Months</button>
+                <button class="period-btn" data-period="6m">6 Months</button>
+                <button class="period-btn" data-period="1y">1 Year</button>
+            </div>
+            
+            <div id="chart-container"></div>
+            
+            <div class="info" id="info">
+                Loading SOPAN data...
+            </div>
+        </div>
+
+        <script>
+            let chart = null;
+            let candleSeries = null;
+            let currentPeriod = '1m';
+            
+            function initChart() {
+                const container = document.getElementById('chart-container');
+                
+                if (chart) chart.remove();
+                
+                chart = LightweightCharts.createChart(container, {
+                    width: container.clientWidth,
+                    height: 600,
+                    layout: {
+                        background: { color: '#1a1a2e' },
+                        textColor: '#d1d4dc',
+                    },
+                    grid: {
+                        vertLines: { color: 'rgba(42, 46, 57, 0.6)' },
+                        horzLines: { color: 'rgba(42, 46, 57, 0.6)' },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    rightPriceScale: {
+                        borderColor: 'rgba(197, 203, 206, 0.4)',
+                    },
+                    timeScale: {
+                        borderColor: 'rgba(197, 203, 206, 0.4)',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                });
+                
+                candleSeries = chart.addCandlestickSeries({
+                    upColor: '#4caf50',
+                    downColor: '#f44336',
+                    borderVisible: true,
+                    wickUpColor: '#4caf50',
+                    wickDownColor: '#f44336',
+                });
+                
+                window.addEventListener('resize', () => {
+                    if (chart) {
+                        chart.applyOptions({ width: container.clientWidth });
+                    }
+                });
+            }
+            
+            async function loadData(period) {
+                document.getElementById('info').innerHTML = 'Loading SOPAN data...';
+                currentPeriod = period;
+                
+                try {
+                    const response = await fetch('/api/candles/bulk', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ symbols: ['SOPL'], period: period })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success && data.data && data.data[0] && data.data[0].success) {
+                        const candles = data.data[0].data;
+                        
+                        if (candles && candles.length > 0) {
+                            const chartData = candles.map(c => ({
+                                time: c.date,
+                                open: c.open,
+                                high: c.high,
+                                low: c.low,
+                                close: c.close
+                            }));
+                            
+                            candleSeries.setData(chartData);
+                            chart.timeScale().fitContent();
+                            
+                            const latest = candles[candles.length - 1];
+                            const first = candles[0];
+                            const change = ((latest.close - first.close) / first.close * 100).toFixed(2);
+                            const changeClass = change >= 0 ? 'positive' : 'negative';
+                            
+                            document.getElementById('info').innerHTML = \`
+                                <strong>SOPAN Pharmaceuticals Limited (SOPL)</strong><br>
+                                <span class="price">Current Price: Rs. \${latest.close}</span><br>
+                                Period Change: <span class="\${changeClass}">\${change >= 0 ? '▲' : '▼'} \${Math.abs(change)}%</span><br>
+                                Period High: Rs. \${Math.max(...candles.map(c => c.high))}<br>
+                                Period Low: Rs. \${Math.min(...candles.map(c => c.low))}<br>
+                                Total Volume: \${candles.reduce((s, c) => s + c.volume, 0).toLocaleString()}<br>
+                                Trading Days: \${candles.length}<br>
+                                Data Period: \${first.date} to \${latest.date}
+                            \`;
+                        } else {
+                            document.getElementById('info').innerHTML = 'No data available for this period. Try a different time range.';
+                        }
+                    } else {
+                        document.getElementById('info').innerHTML = 'Failed to load data. Please try again.';
+                    }
+                } catch (error) {
+                    document.getElementById('info').innerHTML = \`Error loading data: \${error.message}\`;
+                }
+            }
+            
+            function changePeriod(period) {
+                currentPeriod = period;
+                document.querySelectorAll('.period-btn').forEach(btn => {
+                    if (btn.dataset.period === period) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                });
+                loadData(period);
+            }
+            
+            // Initialize
+            initChart();
+            loadData('1m');
+            
+            // Set up period button listeners
+            document.querySelectorAll('.period-btn').forEach(btn => {
+                btn.addEventListener('click', () => changePeriod(btn.dataset.period));
+            });
+        </script>
+    </body>
+    </html>
+  `);
+});
+
 // ============ HEALTH & ROOT ============
 app.get('/health', (req, res) => {
   res.json({
@@ -968,6 +1320,7 @@ app.get('/', (req, res) => {
     version: '2.0.0',
     status: 'running',
     market_data_source: 'MeroLagani Market Summary API',
+    chart_url: 'https://final-ocai.onrender.com/chart',
     endpoints: {
       market: {
         summary: 'GET /api/market/summary',
@@ -1001,6 +1354,13 @@ app.get('/', (req, res) => {
       candles: {
         single: 'GET /api/candles/:symbol?period=1y',
         bulk: 'POST /api/candles/bulk - Body: {"symbols": ["NABIL", "EBL"], "period": "1m"}'
+      },
+      index: {
+        latest: 'GET /api/index/latest - Current NEPSE Index value',
+        historical: 'GET /api/index/historical?limit=100&page=1 - Historical index data (2814 records)'
+      },
+      chart: {
+        sopan: 'GET /chart - Interactive SOPAN candlestick chart'
       },
       health: 'GET /health'
     },
@@ -1045,12 +1405,19 @@ const server = app.listen(PORT, () => {
 📊 Candles: 
    • Single: http://localhost:${PORT}/api/candles/NABIL?period=1y
    • Bulk: POST http://localhost:${PORT}/api/candles/bulk
+📉 NEPSE Index:
+   • Latest: http://localhost:${PORT}/api/index/latest
+   • Historical: http://localhost:${PORT}/api/index/historical?limit=100
+📉 SOPAN Chart: http://localhost:${PORT}/chart
 
 💡 Quick Tests:
    curl http://localhost:${PORT}/api/market/summary
    curl http://localhost:${PORT}/api/companies/search?q=NABIL
    curl "http://localhost:${PORT}/api/candles/NABIL?period=1m"
+   curl "http://localhost:${PORT}/api/index/latest"
+   curl "http://localhost:${PORT}/api/index/historical?limit=10"
    curl -X POST http://localhost:${PORT}/api/candles/bulk -H "Content-Type: application/json" -d '{"symbols": ["NABIL", "EBL"], "period": "1m"}'
+   Open browser: http://localhost:${PORT}/chart
   `);
 });
 

@@ -892,6 +892,126 @@ app.post('/api/candles/bulk', async (req, res) => {
   }
 });
 
+// ============ IPO RESULT SCRAPER ENDPOINTS ============
+const ipoResultScraper = require('./scrapers/ipo/ipoResultScraper');
+
+// Get IPO result from CDSC for a specific company
+app.get('/api/ipo/cdsc/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await ipoResultScraper.fetchIPOResult(name);
+    
+    if (result.found) {
+      res.json({
+        success: true,
+        data: result,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'No IPO result found for the specified company',
+        data: result,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error fetching IPO result:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bulk IPO results from CDSC
+app.post('/api/ipo/cdsc/bulk', async (req, res) => {
+  try {
+    const { names } = req.body;
+    
+    if (!names || !Array.isArray(names) || names.length === 0) {
+      return res.status(400).json({
+        error: 'Names array required',
+        example: { names: ['SOPAN', 'APOLLO', 'OM MEGASHREE'] }
+      });
+    }
+    
+    if (names.length > 10) {
+      return res.status(400).json({ error: 'Maximum 10 names per request' });
+    }
+    
+    const results = await ipoResultScraper.fetchBulkIPOResults(names);
+    
+    res.json({
+      success: true,
+      total_requested: names.length,
+      successful: results.filter(r => r.found).length,
+      failed: results.filter(r => !r.found).length,
+      data: results,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching bulk IPO results:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all IPOs from CDSC
+app.get('/api/ipo/cdsc/all', async (req, res) => {
+  try {
+    const result = await ipoResultScraper.getAllIPOs();
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching all IPOs from CDSC:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search IPO by company name
+app.get('/api/ipo/cdsc/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    
+    if (!q || q.length < 3) {
+      return res.status(400).json({ 
+        error: 'Search query required (min 3 characters)' 
+      });
+    }
+    
+    const result = await ipoResultScraper.searchIPOByCompany(q);
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error searching IPO:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear IPO cache
+app.post('/api/ipo/cdsc/cache/clear', async (req, res) => {
+  try {
+    await ipoResultScraper.clearCache();
+    res.json({
+      success: true,
+      message: 'IPO cache cleared successfully',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error clearing IPO cache:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============ NEPSE INDEX ENDPOINTS ============
 app.get('/api/index/historical', async (req, res) => {
   try {

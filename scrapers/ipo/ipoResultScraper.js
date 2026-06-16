@@ -15,16 +15,22 @@ class IPOResultScraper {
    */
   async getBrowser() {
     if (!this.browser) {
-      this.browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu'
-        ]
-      });
+      try {
+        this.browser = await puppeteer.launch({
+          headless: 'new',
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu'
+          ]
+        });
+      } catch (error) {
+        console.error('Failed to launch browser:', error.message);
+        // If puppeteer fails, we'll use fallback
+        return null;
+      }
     }
     return this.browser;
   }
@@ -43,6 +49,12 @@ class IPOResultScraper {
       }
 
       const browser = await this.getBrowser();
+      
+      // If browser failed, use fallback
+      if (!browser) {
+        return this.fetchIPOResultFallback(ipoName);
+      }
+
       const page = await browser.newPage();
       
       // Set user agent to avoid blocking
@@ -102,7 +114,8 @@ class IPOResultScraper {
         found: result.length > 0,
         results: result,
         detailed_allotment: detailedResult,
-        fetched_at: new Date().toISOString()
+        fetched_at: new Date().toISOString(),
+        source: 'puppeteer'
       };
 
       // Cache the result
@@ -149,7 +162,7 @@ class IPOResultScraper {
         }
       });
 
-      return {
+      const finalResult = {
         ipo_name: ipoName,
         found: results.length > 0,
         results: results,
@@ -158,6 +171,9 @@ class IPOResultScraper {
         source: 'fallback'
       };
 
+      this.cache.set(`ipo_result_${ipoName}`, { data: finalResult, timestamp: Date.now() });
+      return finalResult;
+
     } catch (error) {
       console.error('Fallback IPO fetch failed:', error.message);
       return {
@@ -165,7 +181,8 @@ class IPOResultScraper {
         found: false,
         error: error.message,
         results: [],
-        fetched_at: new Date().toISOString()
+        fetched_at: new Date().toISOString(),
+        source: 'error'
       };
     }
   }
@@ -175,8 +192,12 @@ class IPOResultScraper {
    */
   async fetchDetailedAllotment(ipoName) {
     try {
-      // Try to find a detailed allotment page
       const browser = await this.getBrowser();
+      
+      if (!browser) {
+        return null;
+      }
+
       const page = await browser.newPage();
       
       // Try different URL patterns
@@ -264,6 +285,11 @@ class IPOResultScraper {
       }
 
       const browser = await this.getBrowser();
+      
+      if (!browser) {
+        return this.getAllIPOsFallback();
+      }
+
       const page = await browser.newPage();
       
       await page.goto(this.CDSC_IPO_URL, {
@@ -295,7 +321,8 @@ class IPOResultScraper {
       const result = {
         total: ipos.length,
         ipo_list: ipos,
-        fetched_at: new Date().toISOString()
+        fetched_at: new Date().toISOString(),
+        source: 'puppeteer'
       };
 
       this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
@@ -303,6 +330,47 @@ class IPOResultScraper {
 
     } catch (error) {
       console.error('Error fetching all IPOs from CDSC:', error.message);
+      return this.getAllIPOsFallback();
+    }
+  }
+
+  /**
+   * Fallback for getting all IPOs
+   */
+  async getAllIPOsFallback() {
+    try {
+      const response = await axios.get(this.CDSC_IPO_URL, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Accept': 'text/html'
+        }
+      });
+
+      const $ = cheerio.load(response.data);
+      const ipos = [];
+
+      $('table tbody tr').each((i, row) => {
+        const cells = $(row).find('td');
+        if (cells.length >= 3) {
+          ipos.push({
+            company_name: $(cells[0]).text().trim() || '',
+            issue_manager: $(cells[1]).text().trim() || '',
+            issue_date: $(cells[2]).text().trim() || '',
+            status: $(cells[3]).text().trim() || 'Pending'
+          });
+        }
+      });
+
+      return {
+        total: ipos.length,
+        ipo_list: ipos,
+        fetched_at: new Date().toISOString(),
+        source: 'fallback'
+      };
+
+    } catch (error) {
+      console.error('Error fetching all IPOs (fallback):', error.message);
       return { error: error.message, ipo_list: [] };
     }
   }

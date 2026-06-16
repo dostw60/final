@@ -28,11 +28,83 @@ class IPOResultScraper {
         });
       } catch (error) {
         console.error('Failed to launch browser:', error.message);
-        // If puppeteer fails, we'll use fallback
         return null;
       }
     }
     return this.browser;
+  }
+
+  /**
+   * Clean company name for better matching
+   */
+  cleanCompanyName(name) {
+    return name
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[^a-z0-9 ]/g, '')
+      .trim();
+  }
+
+  /**
+   * Check if company names match (with variations)
+   */
+  companyNameMatches(searchName, companyName) {
+    const cleanSearch = this.cleanCompanyName(searchName);
+    const cleanCompany = this.cleanCompanyName(companyName);
+    
+    // Direct match
+    if (cleanCompany.includes(cleanSearch) || cleanSearch.includes(cleanCompany)) {
+      return true;
+    }
+    
+    // Check for common variations
+    const variations = this.getCompanyNameVariations(searchName);
+    for (const variation of variations) {
+      if (cleanCompany.includes(variation)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Get common name variations
+   */
+  getCompanyNameVariations(name) {
+    const variations = new Set();
+    const clean = this.cleanCompanyName(name);
+    variations.add(clean);
+    
+    // Remove common suffixes
+    const suffixes = [' limited', ' ltd', ' company', ' corp', ' pvt', ' private'];
+    for (const suffix of suffixes) {
+      if (clean.endsWith(suffix)) {
+        variations.add(clean.replace(suffix, ''));
+      }
+    }
+    
+    // Handle common abbreviations
+    const replacements = {
+      'pharmaceuticals': ['pharma', 'pharmaceutical'],
+      'bank': ['banka', 'banking'],
+      'finance': ['financial', 'fin'],
+      'insurance': ['ins', 'insur'],
+      'development': ['dev', 'develop'],
+      'hydropower': ['hydro', 'power'],
+      'microfinance': ['micro', 'mf'],
+      'laghubitta': ['laghu', 'lb']
+    };
+    
+    for (const [word, alternatives] of Object.entries(replacements)) {
+      if (clean.includes(word)) {
+        for (const alt of alternatives) {
+          variations.add(clean.replace(word, alt));
+        }
+      }
+    }
+    
+    return Array.from(variations);
   }
 
   /**
@@ -43,90 +115,87 @@ class IPOResultScraper {
       const cacheKey = `ipo_result_${ipoName}`;
       const cached = this.cache.get(cacheKey);
       
-      // Cache for 24 hours
       if (cached && Date.now() - cached.timestamp < 86400000) {
         return cached.data;
       }
 
       const browser = await this.getBrowser();
       
-      // If browser failed, use fallback
       if (!browser) {
         return this.fetchIPOResultFallback(ipoName);
       }
 
       const page = await browser.newPage();
       
-      // Set user agent to avoid blocking
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
       
-      // Navigate to CDSC IPO result page
       await page.goto(this.CDSC_IPO_URL, {
         waitUntil: 'networkidle0',
         timeout: 30000
       });
 
-      // Wait for the table to load
       await page.waitForSelector('table', { timeout: 10000 });
 
-      // Extract table data
-      const result = await page.evaluate((searchName) => {
+      // Extract all IPO data from the table
+      const allIPOData = await page.evaluate(() => {
         const data = [];
         const rows = document.querySelectorAll('table tbody tr');
         
         for (const row of rows) {
           const cells = row.querySelectorAll('td');
           if (cells.length >= 4) {
-            const companyName = cells[0]?.textContent?.trim() || '';
-            const issueManager = cells[1]?.textContent?.trim() || '';
-            const issueDate = cells[2]?.textContent?.trim() || '';
-            
-            // Check if this is the company we're looking for
-            if (searchName && !companyName.toLowerCase().includes(searchName.toLowerCase())) {
-              continue;
-            }
-
-            // Check for allotment status (if available)
-            const statusCell = cells[3]?.textContent?.trim() || 'Pending';
-            
             data.push({
-              company_name: companyName,
-              issue_manager: issueManager,
-              issue_date: issueDate,
-              status: statusCell,
-              has_result: statusCell.toLowerCase() !== 'pending'
+              company_name: cells[0]?.textContent?.trim() || '',
+              issue_manager: cells[1]?.textContent?.trim() || '',
+              issue_date: cells[2]?.textContent?.trim() || '',
+              status: cells[3]?.textContent?.trim() || 'Pending'
             });
           }
         }
         return data;
-      }, ipoName);
+      });
 
       await page.close();
 
-      // If we found results, also try to fetch detailed allotment data
+      // Find matching companies using improved matching
+      const matchedResults = allIPOData.filter(item => 
+        this.companyNameMatches(ipoName, item.company_name)
+      );
+
       let detailedResult = null;
-      if (result.length > 0 && result[0].has_result) {
-        detailedResult = await this.fetchDetailedAllotment(ipoName);
+      
+      // If we found results, try to get detailed allotment data
+      if (matchedResults.length > 0) {
+        // Check if any have result available
+        const hasResult = matchedResults.some(r => r.status.toLowerCase() !== 'pending');
+        
+        if (hasResult) {
+          detailedResult = await this.fetchDetailedAllotment(ipoName);
+        }
+        
+        // Log the match for debugging
+        console.log(`Found ${matchedResults.length} matches for "${ipoName}"`);
+        matchedResults.forEach(r => {
+          console.log(`  - ${r.company_name} (${r.status})`);
+        });
       }
 
       const finalResult = {
         ipo_name: ipoName,
-        found: result.length > 0,
-        results: result,
+        found: matchedResults.length > 0,
+        results: matchedResults,
         detailed_allotment: detailedResult,
+        all_available_ipos: allIPOData.slice(0, 10), // Include first 10 for debugging
         fetched_at: new Date().toISOString(),
         source: 'puppeteer'
       };
 
-      // Cache the result
       this.cache.set(cacheKey, { data: finalResult, timestamp: Date.now() });
       
       return finalResult;
 
     } catch (error) {
       console.error('Error fetching IPO result from CDSC:', error.message);
-      
-      // Fallback: Try using axios + cheerio as backup
       return this.fetchIPOResultFallback(ipoName);
     }
   }
@@ -146,18 +215,23 @@ class IPOResultScraper {
 
       const $ = cheerio.load(response.data);
       const results = [];
+      const allIPOs = [];
 
       $('table tbody tr').each((i, row) => {
         const cells = $(row).find('td');
         if (cells.length >= 4) {
           const companyName = $(cells[0]).text().trim();
-          if (companyName.toLowerCase().includes(ipoName.toLowerCase())) {
-            results.push({
-              company_name: companyName,
-              issue_manager: $(cells[1]).text().trim(),
-              issue_date: $(cells[2]).text().trim(),
-              status: $(cells[3]).text().trim() || 'Pending'
-            });
+          const ipoData = {
+            company_name: companyName,
+            issue_manager: $(cells[1]).text().trim(),
+            issue_date: $(cells[2]).text().trim(),
+            status: $(cells[3]).text().trim() || 'Pending'
+          };
+          
+          allIPOs.push(ipoData);
+          
+          if (this.companyNameMatches(ipoName, companyName)) {
+            results.push(ipoData);
           }
         }
       });
@@ -167,6 +241,7 @@ class IPOResultScraper {
         found: results.length > 0,
         results: results,
         detailed_allotment: null,
+        all_available_ipos: allIPOs.slice(0, 10),
         fetched_at: new Date().toISOString(),
         source: 'fallback'
       };
@@ -200,11 +275,10 @@ class IPOResultScraper {
 
       const page = await browser.newPage();
       
-      // Try different URL patterns
       const urls = [
-        `https://www.cdsc.com.np/result/${ipoName.toLowerCase()}`,
-        `https://www.cdsc.com.np/allotment/${ipoName}`,
-        `https://www.cdsc.com.np/public/ipo/${ipoName}`
+        `https://www.cdsc.com.np/result/${ipoName.toLowerCase().replace(/\s+/g, '-')}`,
+        `https://www.cdsc.com.np/allotment/${ipoName.toLowerCase().replace(/\s+/g, '-')}`,
+        `https://www.cdsc.com.np/public/ipo/${ipoName.toLowerCase().replace(/\s+/g, '-')}`
       ];
 
       let allotmentData = null;
@@ -214,10 +288,7 @@ class IPOResultScraper {
           await page.goto(url, { waitUntil: 'networkidle0', timeout: 10000 });
           
           const data = await page.evaluate(() => {
-            const tables = document.querySelectorAll('table');
             const info = {};
-            
-            // Extract allotment details
             const rows = document.querySelectorAll('tr');
             rows.forEach(row => {
               const cells = row.querySelectorAll('td, th');
@@ -227,7 +298,6 @@ class IPOResultScraper {
                 if (key) info[key] = value;
               }
             });
-            
             return info;
           });
 
@@ -254,7 +324,7 @@ class IPOResultScraper {
    */
   async fetchBulkIPOResults(ipoNames) {
     const results = [];
-    const batchSize = 3; // Process 3 at a time to avoid rate limiting
+    const batchSize = 3;
 
     for (let i = 0; i < ipoNames.length; i += batchSize) {
       const batch = ipoNames.slice(i, i + batchSize);
@@ -263,7 +333,6 @@ class IPOResultScraper {
       );
       results.push(...batchResults);
       
-      // Delay between batches
       if (i + batchSize < ipoNames.length) {
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -384,7 +453,6 @@ class IPOResultScraper {
       ipo.company_name.toLowerCase().includes(companyName.toLowerCase())
     );
     
-    // Also try to get detailed data for matches
     const detailedResults = [];
     for (const ipo of results) {
       const detail = await this.fetchIPOResult(ipo.company_name);

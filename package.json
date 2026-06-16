@@ -5,30 +5,11 @@
   "main": "index.js",
   "license": "MIT",
   "author": "NEPSE API Developer",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yourusername/nepse-market-data"
-  },
-  "keywords": [
-    "nepse",
-    "stock-market",
-    "api",
-    "nepal-stock-exchange",
-    "historical-data",
-    "candlesticks",
-    "trading",
-    "stock-api",
-    "nepal",
-    "market-data",
-    "real-time-stocks",
-    "stock-prices"
-  ],
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
     "start:silent": "node --no-deprecation index.js",
-    "prod": "NODE_ENV=production node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "prod": "NODE_ENV=production node index.js"
   },
   "dependencies": {
     "axios": "^1.6.2",
@@ -37,7 +18,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "puppeteer": "^21.11.0",
+    "puppeteer": "^24.15.0",
     "winston": "^3.11.0"
   },
   "devDependencies": {

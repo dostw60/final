@@ -1,14 +1,11 @@
 {
   "name": "nepse-market-data",
   "version": "3.0.0",
-  "description": "NEPSE Market Data API - Real-time and historical stock data for Nepal Stock Exchange with OHLC candles, corporate events, and company directory",
+  "description": "NEPSE Market Data API",
   "main": "index.js",
-  "license": "MIT",
-  "author": "NEPSE API Developer",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "start:silent": "node --no-deprecation index.js",
     "prod": "NODE_ENV=production node index.js"
   },
   "dependencies": {

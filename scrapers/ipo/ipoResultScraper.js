@@ -12,6 +12,7 @@ class IPOResultScraper {
    * Clean company name for better matching
    */
   cleanCompanyName(name) {
+    if (!name) return '';
     return name
       .toLowerCase()
       .replace(/\s+/g, ' ')
@@ -23,6 +24,8 @@ class IPOResultScraper {
    * Check if company names match (with variations)
    */
   companyNameMatches(searchName, companyName) {
+    if (!searchName || !companyName) return false;
+    
     const cleanSearch = this.cleanCompanyName(searchName);
     const cleanCompany = this.cleanCompanyName(companyName);
     
@@ -86,6 +89,11 @@ class IPOResultScraper {
    */
   async fetchIPOResult(ipoName) {
     try {
+      // If searching for 'all', return all IPOs
+      if (ipoName.toLowerCase() === 'all') {
+        return this.getAllIPOs();
+      }
+
       const cacheKey = `ipo_result_${ipoName}`;
       const cached = this.cache.get(cacheKey);
       
@@ -93,11 +101,15 @@ class IPOResultScraper {
         return cached.data;
       }
 
+      // Try to fetch with proper headers
       const response = await axios.get(this.CDSC_IPO_URL, {
         timeout: 15000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         }
       });
 
@@ -105,37 +117,86 @@ class IPOResultScraper {
       const results = [];
       const allIPOs = [];
 
-      $('table tbody tr').each((i, row) => {
+      // Try different table selectors
+      let tableFound = false;
+      const tableSelectors = ['table', '.table', '.ipo-table', 'table.ipo-result-table'];
+      
+      for (const selector of tableSelectors) {
+        const table = $(selector);
+        if (table.length > 0) {
+          tableFound = true;
+          break;
+        }
+      }
+
+      // Parse the table
+      $('table tbody tr, table tr').each((i, row) => {
         const cells = $(row).find('td');
-        if (cells.length >= 4) {
-          const companyName = $(cells[0]).text().trim();
-          const ipoData = {
-            company_name: companyName,
-            issue_manager: $(cells[1]).text().trim(),
-            issue_date: $(cells[2]).text().trim(),
-            status: $(cells[3]).text().trim() || 'Pending'
-          };
+        if (cells.length >= 3) {
+          const companyName = $(cells[0]).text().trim() || '';
+          const issueManager = $(cells[1]).text().trim() || '';
+          const issueDate = $(cells[2]).text().trim() || '';
+          const status = cells.length >= 4 ? $(cells[3]).text().trim() : 'Pending';
           
-          allIPOs.push(ipoData);
-          
-          if (this.companyNameMatches(ipoName, companyName)) {
-            results.push(ipoData);
+          if (companyName) {
+            const ipoData = {
+              company_name: companyName,
+              issue_manager: issueManager,
+              issue_date: issueDate,
+              status: status || 'Pending'
+            };
+            
+            allIPOs.push(ipoData);
+            
+            if (this.companyNameMatches(ipoName, companyName)) {
+              results.push(ipoData);
+            }
           }
         }
       });
 
-      // If no match found, try to get all IPOs and return them
-      if (results.length === 0 && allIPOs.length > 0) {
-        console.log(`No match found for "${ipoName}". Returning all available IPOs for reference.`);
+      // If no results found, try alternative parsing
+      if (allIPOs.length === 0) {
+        // Try to find any table with data
+        $('table').each((i, table) => {
+          $(table).find('tr').each((j, row) => {
+            const cells = $(row).find('td');
+            if (cells.length >= 2) {
+              const firstCell = $(cells[0]).text().trim();
+              if (firstCell && !firstCell.includes('S.N.') && !firstCell.includes('SN')) {
+                allIPOs.push({
+                  company_name: firstCell,
+                  issue_manager: cells.length > 1 ? $(cells[1]).text().trim() : '',
+                  issue_date: cells.length > 2 ? $(cells[2]).text().trim() : '',
+                  status: cells.length > 3 ? $(cells[3]).text().trim() : 'Pending'
+                });
+              }
+            }
+          });
+        });
+      }
+
+      // If still no results, return a helpful message
+      if (allIPOs.length === 0) {
+        return {
+          ipo_name: ipoName,
+          found: false,
+          message: 'Could not fetch IPO data from CDSC. The website structure may have changed.',
+          results: [],
+          all_available_ipos: [],
+          total_available: 0,
+          fetched_at: new Date().toISOString(),
+          source: 'error'
+        };
       }
 
       const finalResult = {
         ipo_name: ipoName,
         found: results.length > 0,
-        results: results,
-        detailed_allotment: null,
+        results: results.length > 0 ? results : allIPOs.slice(0, 10),
         all_available_ipos: allIPOs.slice(0, 20),
         total_available: allIPOs.length,
+        message: results.length > 0 ? 'Found matching IPOs' : 'No exact match found. Showing all available IPOs.',
         fetched_at: new Date().toISOString(),
         source: 'cheerio'
       };
@@ -145,11 +206,16 @@ class IPOResultScraper {
 
     } catch (error) {
       console.error('IPO fetch failed:', error.message);
+      
+      // Return a helpful error message
       return {
         ipo_name: ipoName,
         found: false,
         error: error.message,
+        message: 'Failed to fetch IPO data. Please try again later or check the CDSC website directly.',
         results: [],
+        all_available_ipos: [],
+        total_available: 0,
         fetched_at: new Date().toISOString(),
         source: 'error'
       };
@@ -193,23 +259,26 @@ class IPOResultScraper {
       const response = await axios.get(this.CDSC_IPO_URL, {
         timeout: 15000,
         headers: {
-          'User-Agent': 'Mozilla/5.0',
-          'Accept': 'text/html'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml'
         }
       });
 
       const $ = cheerio.load(response.data);
       const ipos = [];
 
-      $('table tbody tr').each((i, row) => {
+      $('table tbody tr, table tr').each((i, row) => {
         const cells = $(row).find('td');
         if (cells.length >= 3) {
-          ipos.push({
-            company_name: $(cells[0]).text().trim() || '',
-            issue_manager: $(cells[1]).text().trim() || '',
-            issue_date: $(cells[2]).text().trim() || '',
-            status: $(cells[3]).text().trim() || 'Pending'
-          });
+          const companyName = $(cells[0]).text().trim() || '';
+          if (companyName && !companyName.includes('S.N.') && !companyName.includes('SN')) {
+            ipos.push({
+              company_name: companyName,
+              issue_manager: cells.length > 1 ? $(cells[1]).text().trim() : '',
+              issue_date: cells.length > 2 ? $(cells[2]).text().trim() : '',
+              status: cells.length > 3 ? $(cells[3]).text().trim() : 'Pending'
+            });
+          }
         }
       });
 
@@ -217,7 +286,8 @@ class IPOResultScraper {
         total: ipos.length,
         ipo_list: ipos,
         fetched_at: new Date().toISOString(),
-        source: 'cheerio'
+        source: 'cheerio',
+        message: ipos.length > 0 ? 'Successfully fetched IPO list' : 'No IPOs found'
       };
 
       this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
@@ -225,7 +295,12 @@ class IPOResultScraper {
 
     } catch (error) {
       console.error('Error fetching all IPOs:', error.message);
-      return { error: error.message, ipo_list: [] };
+      return { 
+        error: error.message, 
+        ipo_list: [],
+        total: 0,
+        message: 'Failed to fetch IPO list'
+      };
     }
   }
 

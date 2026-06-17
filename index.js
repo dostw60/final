@@ -1462,7 +1462,85 @@ app.get('/api/market/force-refresh', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ============ FLOOR SHEET ENDPOINTS ============
+const floorSheetScraper = require('./scrapers/market/floorSheetScraper');
 
+// Get floor sheet for today or a specific date
+app.get('/api/floorsheet', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const result = await floorSheetScraper.fetchFloorSheet(date);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get trades for a specific stock symbol
+app.get('/api/floorsheet/symbol/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { date } = req.query;
+    const trades = await floorSheetScraper.getTradesBySymbol(symbol, date);
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      date: date || 'today',
+      count: trades.length,
+      data: trades,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get top traded symbols by turnover
+app.get('/api/floorsheet/top', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const { date } = req.query;
+    const topSymbols = await floorSheetScraper.getTopTradedSymbols(limit, date);
+    res.json({
+      success: true,
+      date: date || 'today',
+      count: topSymbols.length,
+      data: topSymbols,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get market activity summary
+app.get('/api/floorsheet/activity', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const activity = await floorSheetScraper.getMarketActivity(date);
+    res.json({
+      success: true,
+      data: activity,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get floor sheet for a date range
+app.get('/api/floorsheet/range', async (req, res) => {
+  try {
+    const { from, to, limit = 20 } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ error: 'Both "from" and "to" dates are required (YYYY-MM-DD)' });
+    }
+    const result = await floorSheetScraper.fetchFloorSheetRange(from, to, parseInt(limit));
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 
 // ============ BONUS SHARE ENDPOINTS ============

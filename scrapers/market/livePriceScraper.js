@@ -16,6 +16,7 @@ class NEPSEPriceScraper {
     };
   }
 
+  // ============ MARKET STATUS METHODS ============
   isMarketOpen() {
     try {
       const now = new Date();
@@ -72,8 +73,7 @@ class NEPSEPriceScraper {
     return this.isMarketOpen() ? 2000 : 30000;
   }
 
-  // ... rest of your methods remain the same ...
-  
+  // ============ PRICE FETCHING METHODS ============
   async getCurrentPrices(forceFresh = false) {
     try {
       const cacheKey = 'live_prices_all';
@@ -136,6 +136,7 @@ class NEPSEPriceScraper {
     const stocks = rawData.stock?.detail || [];
     const turnoverData = rawData.turnover?.detail || [];
     
+    // Create maps for additional data
     const turnoverMap = new Map();
     for (const item of turnoverData) {
       turnoverMap.set(item.s, item);
@@ -147,9 +148,11 @@ class NEPSEPriceScraper {
       
       const extraData = turnoverMap.get(symbol) || {};
       
+      // Get core price data
       const lastPrice = this.parseNumeric(item.lp || 0);
       const change = this.parseNumeric(item.c || 0);
       
+      // Calculate percent change correctly
       let percentChange = this.parseNumeric(item.pc || 0);
       if (percentChange === 0 && change !== 0 && lastPrice !== 0) {
         const prevClose = lastPrice - change;
@@ -158,11 +161,13 @@ class NEPSEPriceScraper {
         }
       }
       
+      // Get previous close (from extraData or calculate)
       let previousClose = this.parseNumeric(extraData.pc || 0);
       if (previousClose === 0 && lastPrice !== 0 && change !== 0) {
         previousClose = lastPrice - change;
       }
       
+      // Get open price (from extraData or use previous close)
       let openPrice = this.parseNumeric(extraData.op || item.op || 0);
       if (openPrice === 0 && previousClose !== 0) {
         openPrice = previousClose;
@@ -204,6 +209,7 @@ class NEPSEPriceScraper {
       const stockPrice = allPrices.find(p => p.symbol === symbol.toUpperCase());
       
       if (stockPrice) {
+        // Ensure numeric values are properly formatted
         stockPrice.last_traded_price = parseFloat(stockPrice.last_traded_price.toFixed(2));
         stockPrice.change = parseFloat(stockPrice.change.toFixed(2));
         stockPrice.percent_change = parseFloat(stockPrice.percent_change.toFixed(2));
@@ -266,7 +272,7 @@ class NEPSEPriceScraper {
       };
     }
     
-    return {
+    const summary = {
       total_stocks: prices.length,
       total_volume: prices.reduce((sum, p) => sum + p.volume, 0),
       total_turnover: prices.reduce((sum, p) => sum + p.turnover, 0),
@@ -278,6 +284,8 @@ class NEPSEPriceScraper {
       market_status: this.getMarketStatus(),
       timestamp: new Date().toISOString()
     };
+    
+    return summary;
   }
 
   clearCache() {

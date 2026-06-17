@@ -1,4 +1,4 @@
-// index.js - COMPLETE PRODUCTION READY VERSION
+// index.js - COMPLETE PRODUCTION READY VERSION WITH UNIVERSAL CHART
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -1066,9 +1066,188 @@ app.get('/api/index/latest', async (req, res) => {
   }
 });
 
-// ============ CHART ENDPOINT ============
-app.get('/chart', (req, res) => {
-  res.send(`<!DOCTYPE html><html><head><title>SOPAN Candlestick Chart</title><script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.js"></script><style>body{margin:0;padding:20px;background:#1a1a2e;color:#fff}#chart{width:100%;height:600px}</style></head><body><h2>SOPAN Pharmaceuticals (SOPL)</h2><div id="chart"></div><script>fetch('/api/candles/SOPL?period=1m').then(r=>r.json()).then(data=>{const chart=LightweightCharts.createChart(document.getElementById('chart'),{width:window.innerWidth-40,height:600,layout:{background:{color:'#1a1a2e'},textColor:'#ddd'}});const series=chart.addCandlestickSeries({upColor:'#4caf50',downColor:'#f44336'});series.setData(data.data.map(c=>({time:c.date,open:c.open,high:c.high,low:c.low,close:c.close})));chart.timeScale().fitContent()});</script></body></html>`);
+// ============ UNIVERSAL CHART ENDPOINT ============
+app.get('/chart/:symbol?', (req, res) => {
+  const symbol = req.params.symbol || 'SOPL';
+  const period = req.query.period || '1m';
+  
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+    <title>${symbol} Candlestick Chart</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.js"></script>
+    <style>
+        body { margin: 0; padding: 20px; background: #1a1a2e; color: #fff; font-family: Arial, sans-serif; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+        #chart { width: 100%; height: 600px; background: #1a1a2e; border-radius: 10px; }
+        .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 15px 0; }
+        button { background: #2a2a3e; color: #fff; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; transition: all 0.3s; }
+        button:hover { background: #3a3a5e; }
+        button.active { background: #ffd700; color: #1a1a2e; font-weight: bold; }
+        .info { margin-top: 15px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 8px; text-align: center; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 15px; }
+        .stat-card { background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; text-align: center; }
+        .stat-value { font-size: 20px; font-weight: bold; color: #ffd700; }
+        .stat-label { font-size: 12px; color: #aaa; }
+        .error { color: #ff4d4d; }
+        .positive { color: #4caf50; }
+        .negative { color: #f44336; }
+        input[type="text"] { background: #2a2a3e; color: #fff; border: 1px solid #3a3a5e; padding: 8px 12px; border-radius: 5px; font-size: 14px; width: 150px; }
+        input[type="text"]:focus { outline: none; border-color: #ffd700; }
+        @media (max-width: 768px) { .header { flex-direction: column; align-items: stretch; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>📈 ${symbol} - Candlestick Chart</h2>
+            <div>
+                <input type="text" id="symbolInput" value="${symbol}" placeholder="Enter symbol..." style="width:150px;">
+                <button onclick="loadSymbol()">Go</button>
+                <button onclick="loadChart('${period}')" style="background:#ffd700;color:#1a1a2e;">Refresh</button>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button class="period-btn" data-period="1w">1 Week</button>
+            <button class="period-btn active" data-period="1m">1 Month</button>
+            <button class="period-btn" data-period="3m">3 Months</button>
+            <button class="period-btn" data-period="6m">6 Months</button>
+            <button class="period-btn" data-period="1y">1 Year</button>
+            <button class="period-btn" data-period="2y">2 Years</button>
+            <button class="period-btn" data-period="3y">3 Years</button>
+            <button class="period-btn" data-period="5y">5 Years</button>
+        </div>
+        
+        <div id="chart"></div>
+        <div id="info" class="info">Loading ${symbol} data...</div>
+        
+        <div class="stats" id="stats">
+            <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">Current Price</div></div>
+            <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">Change</div></div>
+            <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">High</div></div>
+            <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">Low</div></div>
+            <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">Volume</div></div>
+            <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">Candles</div></div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let series = null;
+        let currentSymbol = '${symbol}';
+        let currentPeriod = '${period}';
+        
+        function initChart() {
+            const container = document.getElementById('chart');
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth,
+                height: 600,
+                layout: { background: { color: '#1a1a2e' }, textColor: '#ddd' },
+                grid: { vertLines: { color: '#2a2a3e' }, horzLines: { color: '#2a2a3e' } },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                rightPriceScale: { borderColor: '#2a2a3e' },
+                timeScale: { borderColor: '#2a2a3e', timeVisible: true }
+            });
+            
+            series = chart.addCandlestickSeries({
+                upColor: '#4caf50',
+                downColor: '#f44336',
+                borderVisible: false,
+                wickUpColor: '#4caf50',
+                wickDownColor: '#f44336'
+            });
+            
+            window.addEventListener('resize', () => {
+                chart.applyOptions({ width: container.clientWidth });
+            });
+        }
+        
+        function loadSymbol() {
+            const input = document.getElementById('symbolInput');
+            const symbol = input.value.trim().toUpperCase();
+            if (symbol) {
+                currentSymbol = symbol;
+                document.querySelector('h2').textContent = \`📈 \${symbol} - Candlestick Chart\`;
+                loadChart(currentPeriod);
+            }
+        }
+        
+        async function loadChart(period) {
+            const infoDiv = document.getElementById('info');
+            infoDiv.innerHTML = 'Loading data...';
+            currentPeriod = period;
+            
+            // Update active button
+            document.querySelectorAll('.period-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.period === period);
+            });
+            
+            try {
+                const url = \`/api/candles/\${currentSymbol}?period=\${period}\`;
+                console.log('Fetching:', url);
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                console.log('Data received:', data);
+                
+                if (data.success && data.data && data.data.length > 0) {
+                    // Format data for chart
+                    const chartData = data.data.map(c => ({
+                        time: c.date,
+                        open: c.open,
+                        high: c.high,
+                        low: c.low,
+                        close: c.close
+                    }));
+                    
+                    series.setData(chartData);
+                    chart.timeScale().fitContent();
+                    
+                    // Calculate stats
+                    const latest = data.data[data.data.length - 1];
+                    const first = data.data[0];
+                    const change = ((latest.close - first.open) / first.open * 100).toFixed(2);
+                    const highest = Math.max(...data.data.map(c => c.high));
+                    const lowest = Math.min(...data.data.map(c => c.low));
+                    const totalVolume = data.data.reduce((sum, c) => sum + c.volume, 0);
+                    
+                    // Update stats
+                    document.getElementById('stats').innerHTML = \`
+                        <div class="stat-card"><div class="stat-value">Rs. \${latest.close.toFixed(2)}</div><div class="stat-label">Current Price</div></div>
+                        <div class="stat-card"><div class="stat-value \${change >= 0 ? 'positive' : 'negative'}">\${change >= 0 ? '+' : ''}\${change}%</div><div class="stat-label">Change</div></div>
+                        <div class="stat-card"><div class="stat-value positive">Rs. \${highest.toFixed(2)}</div><div class="stat-label">High</div></div>
+                        <div class="stat-card"><div class="stat-value negative">Rs. \${lowest.toFixed(2)}</div><div class="stat-label">Low</div></div>
+                        <div class="stat-card"><div class="stat-value">\${totalVolume.toLocaleString()}</div><div class="stat-label">Total Volume</div></div>
+                        <div class="stat-card"><div class="stat-value">\${data.data.length}</div><div class="stat-label">Candles</div></div>
+                    \`;
+                    
+                    infoDiv.innerHTML = \`✅ \${currentSymbol}: \${data.data.length} candles | Latest: Rs. \${latest.close.toFixed(2)} | Change: \${change >= 0 ? '📈' : '📉'} \${change}%\`;
+                } else {
+                    infoDiv.innerHTML = \`⚠️ No data available for \${currentSymbol}. Try a different period or check if the stock is listed.\`;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                infoDiv.innerHTML = \`❌ Error: \${error.message}\`;
+            }
+        }
+        
+        // Enter key support
+        document.getElementById('symbolInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') loadSymbol();
+        });
+        
+        // Period button listeners
+        document.querySelectorAll('.period-btn').forEach(btn => {
+            btn.addEventListener('click', () => loadChart(btn.dataset.period));
+        });
+        
+        initChart();
+        loadChart('${period}');
+    </script>
+</body>
+</html>`);
 });
 
 // ============ HEALTH & ROOT ============
@@ -1209,7 +1388,8 @@ app.get('/', (req, res) => {
             </div>
             <div class="card"><div class="card-title"><span class="emoji">📊</span>Charts & Health</div>
                 <ul class="endpoint-list">
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart" target="_blank">${baseUrl}/chart</a></span><div class="description">Interactive SOPAN candlestick chart</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart" target="_blank">${baseUrl}/chart</a></span><div class="description">Interactive candlestick chart for any symbol</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart/NABIL?period=1y" target="_blank">${baseUrl}/chart/:symbol?period=1y</a></span><div class="description">Universal chart - change symbol in URL (e.g., NABIL)</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/health" target="_blank">${baseUrl}/health</a></span><div class="description">API health check</div></li>
                 </ul>
             </div>
@@ -1404,8 +1584,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`📈 NEPSE Index: http://localhost:${PORT}/api/index/latest`);
   console.log(`📅 Events: http://localhost:${PORT}/api/events`);
   console.log(`📉 Chart: http://localhost:${PORT}/chart`);
-  console.log(`💚 Health: http://localhost:${PORT}/health`);
   console.log(`🔴 Live Price: http://localhost:${PORT}/api/live/price/NABIL`);
+  console.log(`📊 Universal Chart: http://localhost:${PORT}/chart/SOPL?period=1m`);
+  console.log(`💚 Health: http://localhost:${PORT}/health`);
 });
 
 module.exports = app;

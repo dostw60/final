@@ -24,7 +24,7 @@ class NEPSEPriceScraper {
       const day = nepalTime.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
       const hours = nepalTime.getHours();
       const minutes = nepalTime.getMinutes();
-      const currentTime = hours + minutes / 60; // Convert to decimal hours
+      const currentTime = hours + minutes / 60;
       
       // FIX: Monday (1) to Friday (5) are trading days
       const isWeekday = day >= 1 && day <= 5;
@@ -45,7 +45,8 @@ class NEPSEPriceScraper {
         minutes: minutes,
         isWeekday: isWeekday,
         isTradingHour: isTradingHour,
-        currentTime: nepalTime.toLocaleString()
+        currentTime: nepalTime.toLocaleString(),
+        timezone: 'Asia/Kathmandu'
       };
       
       return isOpen;
@@ -61,8 +62,9 @@ class NEPSEPriceScraper {
     this.isMarketOpen(); // Update status
     return {
       ...this.marketStatus,
-      timezone: 'Asia/Kathmandu',
-      message: this.marketStatus.open ? '✅ Market is OPEN for trading' : '❌ Market is CLOSED'
+      message: this.marketStatus.open ? '✅ Market is OPEN for trading' : '❌ Market is CLOSED',
+      trading_hours: '11:00 AM - 3:00 PM (Nepal Time)',
+      trading_days: 'Monday - Friday'
     };
   }
 
@@ -70,6 +72,8 @@ class NEPSEPriceScraper {
     return this.isMarketOpen() ? 2000 : 30000;
   }
 
+  // ... rest of your methods remain the same ...
+  
   async getCurrentPrices(forceFresh = false) {
     try {
       const cacheKey = 'live_prices_all';
@@ -132,7 +136,6 @@ class NEPSEPriceScraper {
     const stocks = rawData.stock?.detail || [];
     const turnoverData = rawData.turnover?.detail || [];
     
-    // Create maps for additional data
     const turnoverMap = new Map();
     for (const item of turnoverData) {
       turnoverMap.set(item.s, item);
@@ -144,11 +147,9 @@ class NEPSEPriceScraper {
       
       const extraData = turnoverMap.get(symbol) || {};
       
-      // Get core price data
       const lastPrice = this.parseNumeric(item.lp || 0);
       const change = this.parseNumeric(item.c || 0);
       
-      // Calculate percent change correctly
       let percentChange = this.parseNumeric(item.pc || 0);
       if (percentChange === 0 && change !== 0 && lastPrice !== 0) {
         const prevClose = lastPrice - change;
@@ -157,13 +158,11 @@ class NEPSEPriceScraper {
         }
       }
       
-      // Get previous close (from extraData or calculate)
       let previousClose = this.parseNumeric(extraData.pc || 0);
       if (previousClose === 0 && lastPrice !== 0 && change !== 0) {
         previousClose = lastPrice - change;
       }
       
-      // Get open price (from extraData or use previous close)
       let openPrice = this.parseNumeric(extraData.op || item.op || 0);
       if (openPrice === 0 && previousClose !== 0) {
         openPrice = previousClose;
@@ -205,7 +204,6 @@ class NEPSEPriceScraper {
       const stockPrice = allPrices.find(p => p.symbol === symbol.toUpperCase());
       
       if (stockPrice) {
-        // Ensure numeric values are properly formatted
         stockPrice.last_traded_price = parseFloat(stockPrice.last_traded_price.toFixed(2));
         stockPrice.change = parseFloat(stockPrice.change.toFixed(2));
         stockPrice.percent_change = parseFloat(stockPrice.percent_change.toFixed(2));
@@ -230,28 +228,25 @@ class NEPSEPriceScraper {
 
   async getTopGainers(limit = 10) {
     const prices = await this.getCurrentPrices();
-    const gainers = prices
+    return prices
       .filter(p => p.percent_change > 0)
       .sort((a, b) => b.percent_change - a.percent_change)
       .slice(0, limit);
-    return gainers;
   }
 
   async getTopLosers(limit = 10) {
     const prices = await this.getCurrentPrices();
-    const losers = prices
+    return prices
       .filter(p => p.percent_change < 0)
       .sort((a, b) => a.percent_change - b.percent_change)
       .slice(0, limit);
-    return losers;
   }
 
   async getMostActive(limit = 10) {
     const prices = await this.getCurrentPrices();
-    const active = prices
+    return prices
       .sort((a, b) => b.volume - a.volume)
       .slice(0, limit);
-    return active;
   }
 
   async getMarketSummary() {
@@ -271,7 +266,7 @@ class NEPSEPriceScraper {
       };
     }
     
-    const summary = {
+    return {
       total_stocks: prices.length,
       total_volume: prices.reduce((sum, p) => sum + p.volume, 0),
       total_turnover: prices.reduce((sum, p) => sum + p.turnover, 0),
@@ -283,8 +278,6 @@ class NEPSEPriceScraper {
       market_status: this.getMarketStatus(),
       timestamp: new Date().toISOString()
     };
-    
-    return summary;
   }
 
   clearCache() {

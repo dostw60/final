@@ -8,16 +8,62 @@ class NEPSEPriceScraper {
     this.cache = new Map();
     this.requestDelay = 2000;
     this.lastRequestTime = 0;
+    this.marketStatus = {
+      open: false,
+      lastChecked: null,
+      dayName: '',
+      currentTime: ''
+    };
   }
 
   isMarketOpen() {
-    const now = new Date();
-    const nepalTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kathmandu' }));
-    const hour = nepalTime.getHours();
-    const day = nepalTime.getDay();
-    const isWeekday = day >= 0 && day <= 4;
-    const isTradingHour = hour >= 11 && hour <= 15;
-    return isWeekday && isTradingHour;
+    try {
+      const now = new Date();
+      const nepalTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kathmandu' }));
+      
+      const day = nepalTime.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+      const hours = nepalTime.getHours();
+      const minutes = nepalTime.getMinutes();
+      const currentTime = hours + minutes / 60; // Convert to decimal hours
+      
+      // FIX: Monday (1) to Friday (5) are trading days
+      const isWeekday = day >= 1 && day <= 5;
+      
+      // Trading hours: 11:00 AM to 3:00 PM (15:00)
+      const isTradingHour = currentTime >= 11 && currentTime < 15;
+      
+      const isOpen = isWeekday && isTradingHour;
+      
+      // Update market status for debugging
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      this.marketStatus = {
+        open: isOpen,
+        lastChecked: nepalTime,
+        dayName: dayNames[day],
+        dayNumber: day,
+        hours: hours,
+        minutes: minutes,
+        isWeekday: isWeekday,
+        isTradingHour: isTradingHour,
+        currentTime: nepalTime.toLocaleString()
+      };
+      
+      return isOpen;
+      
+    } catch (error) {
+      console.error('Error checking market status:', error);
+      return false;
+    }
+  }
+
+  // Get detailed market status for debugging
+  getMarketStatus() {
+    this.isMarketOpen(); // Update status
+    return {
+      ...this.marketStatus,
+      timezone: 'Asia/Kathmandu',
+      message: this.marketStatus.open ? '✅ Market is OPEN for trading' : '❌ Market is CLOSED'
+    };
   }
 
   getCacheTTL() {
@@ -220,7 +266,8 @@ class NEPSEPriceScraper {
         declining: 0,
         unchanged: 0,
         avg_change: 0,
-        market_open: this.isMarketOpen()
+        market_open: this.isMarketOpen(),
+        market_status: this.getMarketStatus()
       };
     }
     
@@ -233,6 +280,7 @@ class NEPSEPriceScraper {
       unchanged: prices.filter(p => p.change === 0).length,
       avg_change: (prices.reduce((sum, p) => sum + p.percent_change, 0) / prices.length).toFixed(2),
       market_open: this.isMarketOpen(),
+      market_status: this.getMarketStatus(),
       timestamp: new Date().toISOString()
     };
     

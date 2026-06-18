@@ -1,4 +1,4 @@
-// index.js - COMPLETE PRODUCTION READY VERSION
+// index.js - COMPLETE PRODUCTION READY VERSION (FIXED)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -67,7 +67,7 @@ const cdscClient = axios.create({
 
 // ============ CDSC IPO ENDPOINTS ============
 
-// Get all IPO companies from CDSC
+// Get all IPO companies from CDSC - FIXED
 app.get("/api/ipo/companies", async (req, res) => {
   try {
     const cacheKey = 'cdsc_ipo_companies';
@@ -84,13 +84,62 @@ app.get("/api/ipo/companies", async (req, res) => {
 
     const response = await cdscClient.get("/result/companyShares/fileUploaded");
     
-    const companies = response.data.map(company => ({
-      companyShareId: company.companyShareId,
-      companyName: company.companyName || company.scripName || '',
-      symbol: company.symbol || '',
-      issuePrice: company.issuePrice || 0,
-      totalShares: company.totalShares || 0,
-      issueDate: company.issueDate || '',
+    // FIX: Handle different response formats
+    let companiesData = [];
+    
+    // Check if response.data is an array
+    if (Array.isArray(response.data)) {
+      companiesData = response.data;
+    } 
+    // Check if response.data has a data property that is an array
+    else if (response.data && Array.isArray(response.data.data)) {
+      companiesData = response.data.data;
+    }
+    // Check if response.data has a detail property that is an array
+    else if (response.data && Array.isArray(response.data.detail)) {
+      companiesData = response.data.detail;
+    }
+    // Check if response.data has a list property that is an array
+    else if (response.data && Array.isArray(response.data.list)) {
+      companiesData = response.data.list;
+    }
+    // Check if response.data has a results property that is an array
+    else if (response.data && Array.isArray(response.data.results)) {
+      companiesData = response.data.results;
+    }
+    // Check if response.data has an items property that is an array
+    else if (response.data && Array.isArray(response.data.items)) {
+      companiesData = response.data.items;
+    }
+    // If it's a single object, wrap it in an array
+    else if (response.data && typeof response.data === 'object' && !Array.isArray(response.data)) {
+      // Check if it's a single company object
+      if (response.data.companyShareId || response.data.id) {
+        companiesData = [response.data];
+      } else {
+        // Try to find any array in the object
+        for (const key in response.data) {
+          if (Array.isArray(response.data[key]) && response.data[key].length > 0) {
+            companiesData = response.data[key];
+            break;
+          }
+        }
+      }
+    }
+    
+    // Ensure we have an array
+    if (!Array.isArray(companiesData)) {
+      companiesData = [];
+    }
+    
+    // Map companies to consistent format
+    const companies = companiesData.map(company => ({
+      companyShareId: company.companyShareId || company.id || company.shareId || null,
+      companyName: company.companyName || company.name || company.scripName || company.title || '',
+      symbol: company.symbol || company.scrip || '',
+      issuePrice: parseFloat(company.issuePrice || company.price || 0),
+      totalShares: parseInt(company.totalShares || company.shares || 0),
+      issueDate: company.issueDate || company.date || '',
       status: company.status || 'active'
     }));
 
@@ -106,10 +155,48 @@ app.get("/api/ipo/companies", async (req, res) => {
 
   } catch (error) {
     logger.error('Error fetching IPO companies:', error.message);
+    
+    // Log more details about the error
+    if (error.response) {
+      logger.error('CDSC API Response Error:', {
+        status: error.response.status,
+        data: error.response.data,
+        headers: error.response.headers
+      });
+    }
+    
     res.status(500).json({
       success: false,
       error: "Failed loading companies",
-      message: error.message
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Debug endpoint to see what CDSC returns
+app.get("/api/ipo/debug", async (req, res) => {
+  try {
+    const response = await cdscClient.get("/result/companyShares/fileUploaded");
+    
+    // Analyze the response
+    const analysis = {
+      dataType: typeof response.data,
+      isArray: Array.isArray(response.data),
+      dataKeys: response.data ? Object.keys(response.data) : [],
+      hasDataArray: response.data && Array.isArray(response.data.data),
+      hasDetailArray: response.data && Array.isArray(response.data.detail),
+      hasListArray: response.data && Array.isArray(response.data.list),
+      sampleData: response.data,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json(analysis);
+  } catch (error) {
+    logger.error('Debug endpoint error:', error.message);
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack 
     });
   }
 });
@@ -1322,7 +1409,8 @@ app.get('/', (req, res) => {
     endpoints: {
       cdsc_ipo: {
         companies: 'GET /api/ipo/companies',
-        check: 'POST /api/ipo/check'
+        check: 'POST /api/ipo/check',
+        debug: 'GET /api/ipo/debug'
       },
       live_prices: {
         all: 'GET /api/live/prices',
@@ -1402,6 +1490,7 @@ app.use((req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   logger.info(`🚀 NEPSE Market Data API running on port ${PORT}`);
   logger.info(`📋 IPO Companies: http://localhost:${PORT}/api/ipo/companies`);
+  logger.info(`🔍 IPO Debug: http://localhost:${PORT}/api/ipo/debug`);
   logger.info(`🔴 Live Prices: http://localhost:${PORT}/api/live/prices`);
   logger.info(`📊 Market Summary: http://localhost:${PORT}/api/market/summary`);
   logger.info(`📈 NEPSE Index: http://localhost:${PORT}/api/index/latest`);

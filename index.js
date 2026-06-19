@@ -1,380 +1,25 @@
-// index.js - COMPLETE PRODUCTION READY VERSION (FIXED)
+// index.js - COMPLETE PRODUCTION READY VERSION WITH UNIVERSAL CHART
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const compression = require('compression');
-const winston = require('winston');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============ LOGGING SETUP ============
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.errors({ stack: true }),
-    winston.format.splat(),
-    winston.format.json()
-  ),
-  defaultMeta: { service: 'nepse-market-api' },
-  transports: [
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      )
-    }),
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' })
-  ]
-});
+// Simple in-memory cache
+const cache = new Map();
 
-// ============ MIDDLEWARE ============
-app.use(compression());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// Middleware
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
 // Logging middleware
 app.use((req, res, next) => {
-  logger.info(`${req.method} ${req.url}`, {
-    ip: req.ip,
-    userAgent: req.get('user-agent')
-  });
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
-});
-
-// ============ IN-MEMORY CACHE ============
-const cache = new Map();
-
-// ============ CDSC IPO CLIENT WITH BETTER HEADERS ============
-const cdscClient = axios.create({
-  baseURL: "https://iporesult.cdsc.com.np",
-  headers: {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Content-Type": "application/json",
-    "Origin": "https://iporesult.cdsc.com.np",
-    "Referer": "https://iporesult.cdsc.com.np/",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "Cache-Control": "no-cache"
-  },
-  timeout: 30000,
-  withCredentials: true
-});
-
-// ============ MOCK IPO DATA ============
-const MOCK_IPO_COMPANIES = [
-  { companyShareId: 1, companyName: "Sopan Laghubitta", symbol: "SOPAN", issuePrice: 100, totalShares: 50000, status: "active", issueDate: "2024-01-15" },
-  { companyShareId: 2, companyName: "Apollo Capital", symbol: "APOLLO", issuePrice: 100, totalShares: 30000, status: "active", issueDate: "2024-02-01" },
-  { companyShareId: 3, companyName: "OM Megashree", symbol: "OM", issuePrice: 100, totalShares: 40000, status: "upcoming", issueDate: "2024-03-01" },
-  { companyShareId: 4, companyName: "Nepal Finance", symbol: "NFS", issuePrice: 100, totalShares: 25000, status: "active", issueDate: "2024-01-20" },
-  { companyShareId: 5, companyName: "Kumari Bank", symbol: "KBL", issuePrice: 100, totalShares: 60000, status: "closed", issueDate: "2023-12-01" },
-  { companyShareId: 6, companyName: "Nabil Bank", symbol: "NABIL", issuePrice: 100, totalShares: 75000, status: "active", issueDate: "2024-02-15" },
-  { companyShareId: 7, companyName: "Global IME Bank", symbol: "GBIME", issuePrice: 100, totalShares: 55000, status: "active", issueDate: "2024-01-10" },
-  { companyShareId: 8, companyName: "Himalayan Bank", symbol: "HBL", issuePrice: 100, totalShares: 45000, status: "closed", issueDate: "2023-11-15" },
-  { companyShareId: 9, companyName: "Prabhu Bank", symbol: "PRVU", issuePrice: 100, totalShares: 35000, status: "active", issueDate: "2024-02-20" },
-  { companyShareId: 10, companyName: "Siddhartha Bank", symbol: "SBL", issuePrice: 100, totalShares: 30000, status: "upcoming", issueDate: "2024-03-15" },
-  { companyShareId: 11, companyName: "Chhimek Laghubitta", symbol: "CBBL", issuePrice: 100, totalShares: 20000, status: "active", issueDate: "2024-01-25" },
-  { companyShareId: 12, companyName: "RMDC Laghubitta", symbol: "RLI", issuePrice: 100, totalShares: 25000, status: "active", issueDate: "2024-02-05" }
-];
-
-// ============ CDSC IPO ENDPOINTS ============
-
-// Get all IPO companies from CDSC - FIXED with fallback to mock data
-app.get("/api/ipo/companies", async (req, res) => {
-  try {
-    const cacheKey = 'cdsc_ipo_companies';
-    const cached = cache.get(cacheKey);
-    
-    if (cached && Date.now() - cached.timestamp < 3600000) {
-      return res.json({
-        success: true,
-        data: cached.data,
-        cached: true,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Try to fetch from CDSC
-    try {
-      const response = await cdscClient.get("/result/companyShares/fileUploaded");
-      
-      // Check if we got HTML (rejection)
-      if (typeof response.data === 'string' && response.data.includes('<html')) {
-        logger.warn('CDSC returned HTML - using mock data');
-        return res.json({
-          success: true,
-          mock: true,
-          count: MOCK_IPO_COMPANIES.length,
-          data: MOCK_IPO_COMPANIES,
-          message: "CDSC server is blocking requests. Showing mock data. Use /api/ipo/cdsc-status to check CDSC availability.",
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      // Parse JSON response
-      let companiesData = [];
-      
-      if (Array.isArray(response.data)) {
-        companiesData = response.data;
-      } else if (response.data && typeof response.data === 'object') {
-        for (const key of ['data', 'detail', 'list', 'results', 'items', 'companyShares', 'companies']) {
-          if (Array.isArray(response.data[key])) {
-            companiesData = response.data[key];
-            break;
-          }
-        }
-      }
-      
-      if (companiesData.length === 0) {
-        // Use mock data if no companies found
-        const result = {
-          success: true,
-          mock: true,
-          count: MOCK_IPO_COMPANIES.length,
-          data: MOCK_IPO_COMPANIES,
-          message: "No companies found from CDSC. Showing mock data.",
-          timestamp: new Date().toISOString()
-        };
-        cache.set(cacheKey, { data: result, timestamp: Date.now() });
-        return res.json(result);
-      }
-      
-      const companies = companiesData.map(company => ({
-        companyShareId: company.companyShareId || company.id || company.shareId || null,
-        companyName: company.companyName || company.name || company.scripName || company.title || '',
-        symbol: company.symbol || company.scrip || '',
-        issuePrice: parseFloat(company.issuePrice || company.price || 0),
-        totalShares: parseInt(company.totalShares || company.shares || 0),
-        issueDate: company.issueDate || company.date || '',
-        status: company.status || 'active'
-      }));
-
-      const result = {
-        success: true,
-        count: companies.length,
-        data: companies,
-        timestamp: new Date().toISOString()
-      };
-
-      cache.set(cacheKey, { data: result, timestamp: Date.now() });
-      return res.json(result);
-      
-    } catch (cdscError) {
-      // If CDSC fails, use mock data
-      logger.warn('CDSC fetch failed, using mock data:', cdscError.message);
-      const result = {
-        success: true,
-        mock: true,
-        count: MOCK_IPO_COMPANIES.length,
-        data: MOCK_IPO_COMPANIES,
-        message: "CDSC API is currently unavailable. Showing mock data for testing.",
-        timestamp: new Date().toISOString()
-      };
-      cache.set(cacheKey, { data: result, timestamp: Date.now() });
-      return res.json(result);
-    }
-
-  } catch (error) {
-    logger.error('Error fetching IPO companies:', error.message);
-    
-    // Always fallback to mock data on error
-    res.json({
-      success: true,
-      mock: true,
-      count: MOCK_IPO_COMPANIES.length,
-      data: MOCK_IPO_COMPANIES,
-      message: "Error fetching from CDSC. Showing mock data.",
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// CDSC Status endpoint
-app.get("/api/ipo/cdsc-status", async (req, res) => {
-  try {
-    const response = await cdscClient.get("/result/companyShares/fileUploaded", { timeout: 5000 });
-    const isBlocked = typeof response.data === 'string' && response.data.includes('Request Rejected');
-    
-    res.json({
-      success: true,
-      cdsc_status: isBlocked ? 'blocked' : 'available',
-      message: isBlocked ? 'CDSC is blocking automated requests' : 'CDSC API is accessible',
-      using_mock: isBlocked,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.json({
-      success: false,
-      cdsc_status: 'error',
-      message: error.message,
-      using_mock: true,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Debug endpoint to see what CDSC returns
-app.get("/api/ipo/debug", async (req, res) => {
-  try {
-    const response = await cdscClient.get("/result/companyShares/fileUploaded");
-    
-    const isHtml = typeof response.data === 'string' && response.data.includes('<html');
-    
-    const analysis = {
-      dataType: typeof response.data,
-      isArray: Array.isArray(response.data),
-      isHtml: isHtml,
-      dataKeys: response.data && typeof response.data === 'object' && !isHtml ? Object.keys(response.data) : [],
-      hasDataArray: response.data && Array.isArray(response.data.data),
-      hasDetailArray: response.data && Array.isArray(response.data.detail),
-      hasListArray: response.data && Array.isArray(response.data.list),
-      sampleData: isHtml ? 'HTML content (rejected)' : response.data,
-      timestamp: new Date().toISOString()
-    };
-    
-    res.json(analysis);
-  } catch (error) {
-    logger.error('Debug endpoint error:', error.message);
-    res.status(500).json({ 
-      error: error.message,
-      stack: error.stack 
-    });
-  }
-});
-
-// Get mock IPO data directly
-app.get("/api/ipo/mock", async (req, res) => {
-  res.json({
-    success: true,
-    mock: true,
-    count: MOCK_IPO_COMPANIES.length,
-    data: MOCK_IPO_COMPANIES,
-    message: "This is mock data for testing. CDSC API may be blocking requests.",
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Check IPO result with BOID and Captcha
-app.post("/api/ipo/check", async (req, res) => {
-  try {
-    const {
-      companyShareId,
-      boid,
-      userCaptcha,
-      captchaIdentifier
-    } = req.body;
-
-    if (!companyShareId || !boid || !userCaptcha || !captchaIdentifier) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing required fields",
-        required: ["companyShareId", "boid", "userCaptcha", "captchaIdentifier"]
-      });
-    }
-
-    if (!/^\d{10}$/.test(boid)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid BOID format. Must be 10 digits."
-      });
-    }
-
-    const companyId = parseInt(companyShareId);
-    if (isNaN(companyId) || companyId <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid companyShareId. Must be a positive number."
-      });
-    }
-
-    const cacheKey = `ipo_result_${companyId}_${boid}`;
-    const cached = cache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < 300000) {
-      return res.json({
-        success: true,
-        data: cached.data,
-        cached: true,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Try to check with CDSC
-    try {
-      const response = await cdscClient.post(
-        "/result/result/check",
-        {
-          companyShareId: companyId,
-          boid: boid.toString(),
-          userCaptcha: userCaptcha.toString(),
-          captchaIdentifier: captchaIdentifier.toString()
-        }
-      );
-
-      const result = {
-        success: true,
-        data: response.data,
-        timestamp: new Date().toISOString()
-      };
-
-      if (response.data && response.data.message !== "Invalid captcha") {
-        cache.set(cacheKey, { data: result, timestamp: Date.now() });
-      }
-
-      return res.json(result);
-      
-    } catch (cdscError) {
-      // Return mock result if CDSC fails
-      logger.warn('CDSC check failed, returning mock result:', cdscError.message);
-      
-      // Find the company name from mock data
-      const company = MOCK_IPO_COMPANIES.find(c => c.companyShareId === companyId);
-      
-      return res.json({
-        success: true,
-        mock: true,
-        data: {
-          message: "Result check successful (MOCK)",
-          companyName: company?.companyName || "Unknown Company",
-          boid: boid,
-          status: "Allotted",
-          shares: Math.floor(Math.random() * 10) + 1,
-          message: "CDSC API is currently unavailable. This is a mock response for testing."
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-  } catch (error) {
-    logger.error('Error checking IPO result:', error.message);
-    
-    // Return mock result on error
-    res.json({
-      success: true,
-      mock: true,
-      data: {
-        message: "Result check successful (MOCK - Error Fallback)",
-        boid: req.body.boid,
-        status: "Allotted",
-        shares: Math.floor(Math.random() * 10) + 1,
-        message: "CDSC API error. This is a mock response for testing."
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
 });
 
 // ============ LIVE PRICE SCRAPER ============
@@ -394,18 +39,6 @@ class LivePriceScraper {
     const isWeekday = day >= 0 && day <= 4;
     const isTradingHour = hour >= 11 && hour <= 15;
     return isWeekday && isTradingHour;
-  }
-
-  getMarketStatus() {
-    const now = new Date();
-    const nepalTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kathmandu' }));
-    return {
-      is_open: this.isMarketOpen(),
-      current_time: nepalTime.toISOString(),
-      trading_hours: '11:00 AM - 3:00 PM (NPT)',
-      trading_days: 'Sunday - Thursday',
-      timezone: 'Asia/Kathmandu'
-    };
   }
 
   getCacheTTL() {
@@ -493,7 +126,7 @@ class LivePriceScraper {
       return normalized;
       
     } catch (error) {
-      logger.error('Failed to fetch live prices:', error.message);
+      console.error('Failed to fetch live prices:', error.message);
       return [];
     }
   }
@@ -517,7 +150,7 @@ class LivePriceScraper {
       
       return stockPrice || null;
     } catch (error) {
-      logger.error(`Failed to fetch price for ${symbol}:`, error.message);
+      console.error(`Failed to fetch price for ${symbol}:`, error.message);
       return null;
     }
   }
@@ -566,7 +199,7 @@ class LivePriceScraper {
 
 const livePriceScraper = new LivePriceScraper();
 
-// ============ HELPER FUNCTIONS ============
+// Helper function to calculate start date based on period
 function getStartDate(period) {
   const date = new Date();
   switch(period) {
@@ -582,30 +215,6 @@ function getStartDate(period) {
     default: date.setFullYear(date.getFullYear() - 1);
   }
   return date;
-}
-
-async function fetchStockEvents(fromDate, toDate) {
-  const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
-    params: { type: 'stock_event', fromDate: fromDate, toDate: toDate },
-    timeout: 10000,
-    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
-  });
-  return response.data.detail || [];
-}
-
-function validateDateRange(fromDate, toDate) {
-  let from = fromDate;
-  let to = toDate;
-  
-  const toParts = to.split('/');
-  if (parseInt(toParts[1]) === 0) {
-    const year = parseInt(toParts[2]);
-    const month = parseInt(toParts[0]) - 1;
-    const lastDay = new Date(year, month, 0);
-    to = `${lastDay.getMonth() + 1}/${lastDay.getDate()}/${lastDay.getFullYear()}`;
-  }
-  
-  return { from, to };
 }
 
 // ============ MARKET SUMMARY ENDPOINTS ============
@@ -624,7 +233,7 @@ app.get('/api/market/summary', async (req, res) => {
     cache.set(cacheKey, { data: result, timestamp: Date.now() });
     res.json(result);
   } catch (error) {
-    logger.error('Error fetching market summary:', error.message);
+    console.error('Error fetching market summary:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -736,7 +345,7 @@ app.get('/api/live/prices', async (req, res) => {
     const prices = await livePriceScraper.getCurrentPrices(forceFresh);
     res.json({ success: true, count: prices.length, data: prices, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching live prices:', error.message);
+    console.error('Error fetching live prices:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -748,7 +357,7 @@ app.get('/api/live/price/:symbol', async (req, res) => {
     if (!price) return res.status(404).json({ error: 'Stock not found' });
     res.json({ success: true, data: price, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error(`Error fetching live price for ${req.params.symbol}:`, error.message);
+    console.error(`Error fetching live price for ${req.params.symbol}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -759,7 +368,7 @@ app.get('/api/live/gainers', async (req, res) => {
     const gainers = await livePriceScraper.getTopGainers(limit);
     res.json({ success: true, count: gainers.length, data: gainers, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching gainers:', error.message);
+    console.error('Error fetching gainers:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -770,7 +379,7 @@ app.get('/api/live/losers', async (req, res) => {
     const losers = await livePriceScraper.getTopLosers(limit);
     res.json({ success: true, count: losers.length, data: losers, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching losers:', error.message);
+    console.error('Error fetching losers:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -781,7 +390,7 @@ app.get('/api/live/active', async (req, res) => {
     const active = await livePriceScraper.getMostActive(limit);
     res.json({ success: true, count: active.length, data: active, market_open: livePriceScraper.isMarketOpen(), timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching active stocks:', error.message);
+    console.error('Error fetching active stocks:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -791,7 +400,7 @@ app.get('/api/live/summary', async (req, res) => {
     const summary = await livePriceScraper.getMarketSummary();
     res.json({ success: true, data: summary, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching market summary:', error.message);
+    console.error('Error fetching market summary:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -816,7 +425,7 @@ app.get('/api/companies/search', async (req, res) => {
     
     res.json({ success: true, count: matches.length, data: matches, query: q, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error searching companies:', error.message);
+    console.error('Error searching companies:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -842,7 +451,7 @@ app.get('/api/companies/all', async (req, res) => {
     cache.set(cacheKey, { data: result, timestamp: Date.now() });
     res.json(result);
   } catch (error) {
-    logger.error('Error fetching companies:', error.message);
+    console.error('Error fetching companies:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -866,7 +475,7 @@ app.get('/api/company/:symbol', async (req, res) => {
     
     res.json({ success: true, data: { symbol: companyInfo.d, name: fullName, id: companyInfo.v, market_data: stockData || null, last_updated: new Date().toISOString() } });
   } catch (error) {
-    logger.error('Error fetching company details:', error.message);
+    console.error('Error fetching company details:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -892,12 +501,36 @@ app.post('/api/companies/batch', async (req, res) => {
     }
     res.json({ success: true, count: results.length, data: results, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching batch companies:', error.message);
+    console.error('Error fetching batch companies:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
 // ============ STOCK EVENT ENDPOINTS ============
+async function fetchStockEvents(fromDate, toDate) {
+  const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+    params: { type: 'stock_event', fromDate: fromDate, toDate: toDate },
+    timeout: 10000,
+    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+  });
+  return response.data.detail || [];
+}
+
+function validateDateRange(fromDate, toDate) {
+  let from = fromDate;
+  let to = toDate;
+  
+  const toParts = to.split('/');
+  if (parseInt(toParts[1]) === 0) {
+    const year = parseInt(toParts[2]);
+    const month = parseInt(toParts[0]) - 1;
+    const lastDay = new Date(year, month, 0);
+    to = `${lastDay.getMonth() + 1}/${lastDay.getDate()}/${lastDay.getFullYear()}`;
+  }
+  
+  return { from, to };
+}
+
 app.get('/api/events', async (req, res) => {
   try {
     let { from, to, type, symbol, limit = 100 } = req.query;
@@ -940,7 +573,7 @@ app.get('/api/events', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    logger.error('Error fetching events:', error.message);
+    console.error('Error fetching events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -959,7 +592,7 @@ app.get('/api/events/upcoming', async (req, res) => {
     
     res.json({ success: true, period: `${months} months`, date_range: { from: fromDate, to: toDate }, count: limitedEvents.length, data: limitedEvents, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching upcoming events:', error.message);
+    console.error('Error fetching upcoming events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -978,7 +611,7 @@ app.get('/api/events/upcoming/:type', async (req, res) => {
     events = events.filter(event => event.announcementDetail.toLowerCase().includes(type.toLowerCase())).slice(0, parseInt(limit));
     res.json({ success: true, type: type, period: `${months} months`, count: events.length, data: events, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error(`Error fetching upcoming ${req.params.type} events:`, error.message);
+    console.error(`Error fetching upcoming ${req.params.type} events:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -993,7 +626,7 @@ app.get('/api/events/ipo', async (req, res) => {
     const ipoEvents = events.filter(event => event.announcementDetail.toLowerCase().includes('ipo') || event.announcementDetail.toLowerCase().includes('initial public offering')).slice(0, parseInt(limit));
     res.json({ success: true, count: ipoEvents.length, data: ipoEvents, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching IPO events:', error.message);
+    console.error('Error fetching IPO events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1008,11 +641,12 @@ app.get('/api/events/dividends', async (req, res) => {
     const dividendEvents = events.filter(event => event.announcementDetail.toLowerCase().includes('dividend') || event.announcementDetail.toLowerCase().includes('bonus share')).slice(0, parseInt(limit));
     res.json({ success: true, count: dividendEvents.length, data: dividendEvents, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching dividend events:', error.message);
+    console.error('Error fetching dividend events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
+// UPDATED AGM ENDPOINT - Shows newest events first
 app.get('/api/events/agm', async (req, res) => {
   try {
     const { limit = 100, fresh = false } = req.query;
@@ -1044,10 +678,12 @@ app.get('/api/events/agm', async (req, res) => {
       }
     }
     
+    // Filter AGM events
     const agmEvents = events.filter(event => 
       event.announcementDetail.toLowerCase().includes('agm')
     );
     
+    // Sort by date (NEWEST first)
     agmEvents.sort((a, b) => new Date(b.actionDate) - new Date(a.actionDate));
     
     const limited = agmEvents.slice(0, parseInt(limit));
@@ -1062,7 +698,66 @@ app.get('/api/events/agm', async (req, res) => {
     });
     
   } catch (error) {
-    logger.error('Error fetching AGM events:', error.message);
+    console.error('Error fetching AGM events:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Debug endpoint - check AGM data directly
+app.get('/api/debug/agm', async (req, res) => {
+  try {
+    const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+      params: { type: 'stock_event', fromDate: '1/1/2025', toDate: '12/31/2027' },
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+    });
+    
+    const allEvents = response.data.detail || [];
+    const agmEvents = allEvents.filter(e => e.announcementDetail.toLowerCase().includes('agm'));
+    const tarakholaEvents = agmEvents.filter(e => e.announcementDetail.toLowerCase().includes('tarakhola'));
+    
+    res.json({
+      total_events: allEvents.length,
+      total_agm: agmEvents.length,
+      tarakhola_agm: tarakholaEvents,
+      sample_agm: agmEvents.slice(0, 5)
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search AGM events by company name
+app.get('/api/agm/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.length < 3) {
+      return res.status(400).json({ error: 'Search query required (min 3 characters)' });
+    }
+    
+    const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
+      params: { type: 'stock_event', fromDate: '1/1/2025', toDate: '12/31/2027' },
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+    });
+    
+    const events = response.data.detail || [];
+    const agmEvents = events.filter(event => 
+      event.announcementDetail.toLowerCase().includes('agm') &&
+      event.announcementDetail.toLowerCase().includes(q.toLowerCase())
+    );
+    
+    res.json({
+      success: true,
+      query: q,
+      count: agmEvents.length,
+      data: agmEvents,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error searching AGM events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1077,7 +772,7 @@ app.get('/api/events/right-share', async (req, res) => {
     const rightShareEvents = events.filter(event => event.announcementDetail.toLowerCase().includes('right share')).slice(0, parseInt(limit));
     res.json({ success: true, count: rightShareEvents.length, data: rightShareEvents, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching right share events:', error.message);
+    console.error('Error fetching right share events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1093,7 +788,7 @@ app.get('/api/events/company/:symbol', async (req, res) => {
     const companyEvents = events.filter(event => event.announcementDetail.toUpperCase().includes(symbol.toUpperCase())).slice(0, parseInt(limit));
     res.json({ success: true, symbol: symbol.toUpperCase(), count: companyEvents.length, data: companyEvents, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error(`Error fetching events for ${req.params.symbol}:`, error.message);
+    console.error(`Error fetching events for ${req.params.symbol}:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1118,7 +813,7 @@ app.get('/api/events/stats', async (req, res) => {
     });
     res.json({ success: true, data: stats, year: now.getFullYear(), timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching event stats:', error.message);
+    console.error('Error fetching event stats:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1151,7 +846,7 @@ app.get('/api/candles/:symbol', async (req, res) => {
     }
     res.json({ success: true, symbol: symbol.toUpperCase(), period: period, count: candles.length, data: candles, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error fetching candles:', error.message);
+    console.error('Error fetching candles:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1192,7 +887,127 @@ app.post('/api/candles/bulk', async (req, res) => {
     }
     res.json({ success: true, period: period, total_requested: symbols.length, successful: successCount, failed: symbols.length - successCount, data: results, timestamp: new Date().toISOString() });
   } catch (error) {
-    logger.error('Error in bulk candles:', error.message);
+    console.error('Error in bulk candles:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ IPO RESULT SCRAPER ENDPOINTS ============
+const ipoResultScraper = require('./scrapers/ipo/ipoResultScraper');
+
+// Get IPO result from CDSC for a specific company
+app.get('/api/ipo/cdsc/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await ipoResultScraper.fetchIPOResult(name);
+    
+    if (result.found) {
+      res.json({
+        success: true,
+        data: result,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'No IPO result found for the specified company',
+        data: result,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error fetching IPO result:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get bulk IPO results from CDSC
+app.post('/api/ipo/cdsc/bulk', async (req, res) => {
+  try {
+    const { names } = req.body;
+    
+    if (!names || !Array.isArray(names) || names.length === 0) {
+      return res.status(400).json({
+        error: 'Names array required',
+        example: { names: ['SOPAN', 'APOLLO', 'OM MEGASHREE'] }
+      });
+    }
+    
+    if (names.length > 10) {
+      return res.status(400).json({ error: 'Maximum 10 names per request' });
+    }
+    
+    const results = await ipoResultScraper.fetchBulkIPOResults(names);
+    
+    res.json({
+      success: true,
+      total_requested: names.length,
+      successful: results.filter(r => r.found).length,
+      failed: results.filter(r => !r.found).length,
+      data: results,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching bulk IPO results:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all IPOs from CDSC
+app.get('/api/ipo/cdsc/all', async (req, res) => {
+  try {
+    const result = await ipoResultScraper.getAllIPOs();
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching all IPOs from CDSC:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search IPO by company name
+app.get('/api/ipo/cdsc/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    
+    if (!q || q.length < 3) {
+      return res.status(400).json({ 
+        error: 'Search query required (min 3 characters)' 
+      });
+    }
+    
+    const result = await ipoResultScraper.searchIPOByCompany(q);
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error searching IPO:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear IPO cache
+app.post('/api/ipo/cdsc/cache/clear', async (req, res) => {
+  try {
+    await ipoResultScraper.clearCache();
+    res.json({
+      success: true,
+      message: 'IPO cache cleared successfully',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error clearing IPO cache:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1225,7 +1040,7 @@ app.get('/api/index/historical', async (req, res) => {
     cache.set(cacheKey, { data: result, timestamp: Date.now() });
     res.json(result);
   } catch (error) {
-    logger.error('Error fetching NEPSE index data:', error.message);
+    console.error('Error fetching NEPSE index data:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1246,41 +1061,7 @@ app.get('/api/index/latest', async (req, res) => {
     cache.set(cacheKey, { data: result, timestamp: Date.now() });
     res.json(result);
   } catch (error) {
-    logger.error('Error fetching latest index:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ MARKET STATUS ENDPOINTS ============
-app.get('/api/market/status', (req, res) => {
-  const status = livePriceScraper.getMarketStatus();
-  res.json({
-    success: true,
-    data: status,
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get('/api/market/is-open', (req, res) => {
-  const isOpen = livePriceScraper.isMarketOpen();
-  res.json({
-    success: true,
-    market_open: isOpen,
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get('/api/market/force-refresh', async (req, res) => {
-  try {
-    const prices = await livePriceScraper.getCurrentPrices(true);
-    res.json({
-      success: true,
-      prices_count: prices.length,
-      sample_price: prices.length > 0 ? prices[0] : null,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    logger.error('Error forcing refresh:', error.message);
+    console.error('Error fetching latest index:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1398,6 +1179,7 @@ app.get('/chart/:symbol?', (req, res) => {
             infoDiv.innerHTML = 'Loading data...';
             currentPeriod = period;
             
+            // Update active button
             document.querySelectorAll('.period-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.period === period);
             });
@@ -1411,6 +1193,7 @@ app.get('/chart/:symbol?', (req, res) => {
                 console.log('Data received:', data);
                 
                 if (data.success && data.data && data.data.length > 0) {
+                    // Format data for chart
                     const chartData = data.data.map(c => ({
                         time: c.date,
                         open: c.open,
@@ -1422,6 +1205,7 @@ app.get('/chart/:symbol?', (req, res) => {
                     series.setData(chartData);
                     chart.timeScale().fitContent();
                     
+                    // Calculate stats
                     const latest = data.data[data.data.length - 1];
                     const first = data.data[0];
                     const change = ((latest.close - first.open) / first.open * 100).toFixed(2);
@@ -1429,6 +1213,7 @@ app.get('/chart/:symbol?', (req, res) => {
                     const lowest = Math.min(...data.data.map(c => c.low));
                     const totalVolume = data.data.reduce((sum, c) => sum + c.volume, 0);
                     
+                    // Update stats
                     document.getElementById('stats').innerHTML = \`
                         <div class="stat-card"><div class="stat-value">Rs. \${latest.close.toFixed(2)}</div><div class="stat-label">Current Price</div></div>
                         <div class="stat-card"><div class="stat-value \${change >= 0 ? 'positive' : 'negative'}">\${change >= 0 ? '+' : ''}\${change}%</div><div class="stat-label">Change</div></div>
@@ -1448,10 +1233,12 @@ app.get('/chart/:symbol?', (req, res) => {
             }
         }
         
+        // Enter key support
         document.getElementById('symbolInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') loadSymbol();
         });
         
+        // Period button listeners
         document.querySelectorAll('.period-btn').forEach(btn => {
             btn.addEventListener('click', () => loadChart(btn.dataset.period));
         });
@@ -1465,132 +1252,480 @@ app.get('/chart/:symbol?', (req, res) => {
 
 // ============ HEALTH & ROOT ============
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    timestamp: new Date().toISOString(), 
-    uptime: process.uptime(), 
-    cache_size: cache.size,
-    market_open: livePriceScraper.isMarketOpen(),
-    memory: process.memoryUsage()
-  });
+  res.json({ status: 'healthy', timestamp: new Date().toISOString(), uptime: process.uptime(), cache_size: cache.size });
 });
 
 app.get('/', (req, res) => {
-  res.json({
-    name: 'NEPSE Market Data API',
-    version: '3.0.0',
-    description: 'Real-time and historical stock data for Nepal Stock Exchange',
-    endpoints: {
-      cdsc_ipo: {
-        companies: 'GET /api/ipo/companies',
-        check: 'POST /api/ipo/check',
-        debug: 'GET /api/ipo/debug',
-        mock: 'GET /api/ipo/mock',
-        status: 'GET /api/ipo/cdsc-status'
-      },
-      live_prices: {
-        all: 'GET /api/live/prices',
-        symbol: 'GET /api/live/price/:symbol',
-        gainers: 'GET /api/live/gainers',
-        losers: 'GET /api/live/losers',
-        active: 'GET /api/live/active',
-        summary: 'GET /api/live/summary'
-      },
-      market: {
-        summary: 'GET /api/market/summary',
-        overall: 'GET /api/market/overall',
-        turnover: 'GET /api/market/turnover',
-        sectors: 'GET /api/market/sectors',
-        brokers: 'GET /api/market/brokers',
-        gainers: 'GET /api/market/gainers',
-        losers: 'GET /api/market/losers',
-        active: 'GET /api/market/active',
-        status: 'GET /api/market/status'
-      },
-      stocks: {
-        all: 'GET /api/stocks',
-        symbol: 'GET /api/stock/:symbol'
-      },
-      companies: {
-        search: 'GET /api/companies/search?q=query',
-        all: 'GET /api/companies/all',
-        symbol: 'GET /api/company/:symbol',
-        batch: 'POST /api/companies/batch'
-      },
-      events: {
-        all: 'GET /api/events',
-        upcoming: 'GET /api/events/upcoming',
-        ipo: 'GET /api/events/ipo',
-        dividends: 'GET /api/events/dividends',
-        agm: 'GET /api/events/agm',
-        right_share: 'GET /api/events/right-share'
-      },
-      candles: {
-        symbol: 'GET /api/candles/:symbol?period=1y',
-        bulk: 'POST /api/candles/bulk'
-      },
-      index: {
-        latest: 'GET /api/index/latest',
-        historical: 'GET /api/index/historical'
-      },
-      chart: {
-        universal: 'GET /chart/:symbol?period=1m'
-      },
-      health: {
-        check: 'GET /health'
-      }
-    },
-    timestamp: new Date().toISOString()
-  });
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEPSE Market Data API</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); color: #fff; min-height: 100vh; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 15px; padding: 30px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1); }
+        h1 { font-size: 32px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+        .badge { background: #00ff9d; color: #1a1a2e; padding: 5px 10px; border-radius: 20px; font-size: 14px; font-weight: bold; }
+        .status { color: #00ff9d; margin-top: 10px; }
+        .endpoints-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px; }
+        .card { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 15px; padding: 20px; border: 1px solid rgba(255,255,255,0.1); transition: transform 0.3s; }
+        .card:hover { transform: translateY(-5px); background: rgba(255,255,255,0.15); }
+        .card-title { font-size: 20px; font-weight: bold; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #00ff9d; display: flex; align-items: center; gap: 10px; }
+        .card-title .emoji { font-size: 24px; }
+        .endpoint-list { list-style: none; }
+        .endpoint-list li { margin-bottom: 12px; padding: 8px; border-radius: 8px; transition: background 0.2s; }
+        .endpoint-list li:hover { background: rgba(255,255,255,0.1); }
+        .method { display: inline-block; padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: bold; margin-right: 10px; }
+        .method.get { background: #00ff9d; color: #1a1a2e; }
+        .method.post { background: #ffd700; color: #1a1a2e; }
+        .endpoint-url { font-family: monospace; font-size: 13px; word-break: break-all; }
+        .endpoint-url a { color: #fff; text-decoration: none; border-bottom: 1px dashed rgba(255,255,255,0.3); }
+        .endpoint-url a:hover { color: #00ff9d; border-bottom-color: #00ff9d; }
+        .description { font-size: 11px; color: #aaa; margin-top: 5px; margin-left: 65px; }
+        .footer { text-align: center; margin-top: 30px; padding: 20px; background: rgba(255,255,255,0.05); border-radius: 15px; font-size: 12px; color: #aaa; }
+        @media (max-width: 768px) { .endpoints-grid { grid-template-columns: 1fr; } .description { margin-left: 0; margin-top: 8px; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 NEPSE Market Data API <span class="badge">v3.0.0</span></h1>
+            <p>Real-time and historical stock data for Nepal Stock Exchange</p>
+            <div class="status">🟢 Status: Running | Data Source: MeroLagani</div>
+        </div>
+        <div class="endpoints-grid">
+            <div class="card"><div class="card-title"><span class="emoji">🔴</span>Live Prices</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/prices?fresh=true" target="_blank">${baseUrl}/api/live/prices?fresh=true</a></span><div class="description">Real-time stock prices (use ?fresh=true to bypass cache)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/price/NABIL" target="_blank">${baseUrl}/api/live/price/:symbol</a></span><div class="description">Live price for specific stock (e.g., NABIL, EBL, PRVU)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/gainers" target="_blank">${baseUrl}/api/live/gainers</a></span><div class="description">Top gaining stocks</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/losers" target="_blank">${baseUrl}/api/live/losers</a></span><div class="description">Top losing stocks</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/active" target="_blank">${baseUrl}/api/live/active</a></span><div class="description">Most active stocks by volume</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/summary" target="_blank">${baseUrl}/api/live/summary</a></span><div class="description">Live market summary</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">🚀</span>IPO Announcements</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/all" target="_blank">${baseUrl}/api/ipo/all</a></span><div class="description">All IPO announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/upcoming" target="_blank">${baseUrl}/api/ipo/upcoming</a></span><div class="description">Upcoming IPOs</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/active" target="_blank">${baseUrl}/api/ipo/active</a></span><div class="description">Currently active IPOs</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/recent" target="_blank">${baseUrl}/api/ipo/recent</a></span><div class="description">Recent IPOs (last 6 months)</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">💰</span>Dividends</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/all" target="_blank">${baseUrl}/api/dividends/all</a></span><div class="description">All dividend announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/latest?limit=20" target="_blank">${baseUrl}/api/dividends/latest?limit=20</a></span><div class="description">Latest dividends (6 months)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/company/NABIL" target="_blank">${baseUrl}/api/dividends/company/:symbol</a></span><div class="description">Dividends by company</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/fiscal/2079/80" target="_blank">${baseUrl}/api/dividends/fiscal/:year</a></span><div class="description">Dividends by fiscal year</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/yield/NABIL?price=500" target="_blank">${baseUrl}/api/dividends/yield/:symbol?price=500</a></span><div class="description">Dividend yield calculation</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">🎁</span>Bonus Shares</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/all" target="_blank">${baseUrl}/api/bonus/all</a></span><div class="description">All bonus announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/company/NABIL" target="_blank">${baseUrl}/api/bonus/company/:symbol</a></span><div class="description">Bonus by company</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/upcoming" target="_blank">${baseUrl}/api/bonus/upcoming</a></span><div class="description">Upcoming bonus announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/history/2079/80" target="_blank">${baseUrl}/api/bonus/history/:fiscalYear</a></span><div class="description">Bonus history by fiscal year</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/stats/2079/80" target="_blank">${baseUrl}/api/bonus/stats/:fiscalYear</a></span><div class="description">Bonus statistics</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/impact/NABIL?price=500" target="_blank">${baseUrl}/api/bonus/impact/:symbol?price=500</a></span><div class="description">Calculate bonus impact on price</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">📈</span>Market Data</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/summary" target="_blank">${baseUrl}/api/market/summary</a></span><div class="description">Complete market summary</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/overall" target="_blank">${baseUrl}/api/market/overall</a></span><div class="description">Overall market statistics</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/turnover" target="_blank">${baseUrl}/api/market/turnover</a></span><div class="description">Top turnover leaders</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/sectors" target="_blank">${baseUrl}/api/market/sectors</a></span><div class="description">Sector-wise performance</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/brokers" target="_blank">${baseUrl}/api/market/brokers</a></span><div class="description">Broker-wise performance</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/gainers" target="_blank">${baseUrl}/api/market/gainers</a></span><div class="description">Top gainers</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/losers" target="_blank">${baseUrl}/api/market/losers</a></span><div class="description">Top losers</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/active" target="_blank">${baseUrl}/api/market/active</a></span><div class="description">Most active stocks</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">📊</span>Stocks</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stocks" target="_blank">${baseUrl}/api/stocks</a></span><div class="description">All stocks data</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stock/NABIL" target="_blank">${baseUrl}/api/stock/:symbol</a></span><div class="description">Specific stock data (e.g., NABIL)</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">🏢</span>Companies</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/search?q=NABIL" target="_blank">${baseUrl}/api/companies/search?q=NABIL</a></span><div class="description">Search companies</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/all" target="_blank">${baseUrl}/api/companies/all</a></span><div class="description">All companies list</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/company/NABIL" target="_blank">${baseUrl}/api/company/:symbol</a></span><div class="description">Company details with market data</div></li>
+                    <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/companies/batch</span><div class="description">Batch company details (POST with JSON body)</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">📅</span>Corporate Events</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events" target="_blank">${baseUrl}/api/events</a></span><div class="description">All corporate events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/upcoming?months=3" target="_blank">${baseUrl}/api/events/upcoming?months=3</a></span><div class="description">Upcoming events (next 3 months)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/ipo" target="_blank">${baseUrl}/api/events/ipo</a></span><div class="description">IPO events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/dividends" target="_blank">${baseUrl}/api/events/dividends</a></span><div class="description">Dividend events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/agm" target="_blank">${baseUrl}/api/events/agm</a></span><div class="description">AGM events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/right-share" target="_blank">${baseUrl}/api/events/right-share</a></span><div class="description">Right share events</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/company/NABIL" target="_blank">${baseUrl}/api/events/company/:symbol</a></span><div class="description">Events by company</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/stats" target="_blank">${baseUrl}/api/events/stats</a></span><div class="description">Event statistics</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">🕯️</span>Historical Candles</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/candles/NABIL?period=1y" target="_blank">${baseUrl}/api/candles/:symbol?period=1y</a></span><div class="description">Historical OHLC data (period: 1w,1m,3m,6m,1y,2y,3y,5y)</div></li>
+                    <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/candles/bulk</span><div class="description">Bulk candles for multiple symbols (max 50)</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">📉</span>NEPSE Index</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/latest" target="_blank">${baseUrl}/api/index/latest</a></span><div class="description">Latest NEPSE Index value</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/historical?limit=100" target="_blank">${baseUrl}/api/index/historical?limit=100</a></span><div class="description">Historical index data (2814 records)</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">📊</span>Charts & Health</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart" target="_blank">${baseUrl}/chart</a></span><div class="description">Interactive candlestick chart for any symbol</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart/NABIL?period=1y" target="_blank">${baseUrl}/chart/:symbol?period=1y</a></span><div class="description">Universal chart - change symbol in URL (e.g., NABIL)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/health" target="_blank">${baseUrl}/health</a></span><div class="description">API health check</div></li>
+                </ul>
+            </div>
+        </div>
+        <div class="footer">
+            <p>🚀 NEPSE Market Data API | Real-time data from MeroLagani | Cached for performance</p>
+            <p>💡 Tip: Use ?fresh=true to bypass cache and get latest data</p>
+            <p>📅 Last Updated: ${new Date().toISOString()}</p>
+        </div>
+    </div>
+</body>
+</html>`);
+});
+
+
+
+
+
+
+// ============ MARKET STATUS DEBUG ENDPOINTS ============
+// Detailed market status debug
+app.get('/api/market/status/debug', (req, res) => {
+  try {
+    const status = livePriceScraper.getMarketStatus();
+    res.json({
+      success: true,
+      data: status,
+      server_time: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting market status:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Simple market open check
+app.get('/api/market/is-open', (req, res) => {
+  try {
+    const isOpen = livePriceScraper.isMarketOpen();
+    const status = livePriceScraper.getMarketStatus();
+    res.json({
+      success: true,
+      market_open: isOpen,
+      details: status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error checking market status:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Force refresh market data with status
+app.get('/api/market/force-refresh', async (req, res) => {
+  try {
+    const prices = await livePriceScraper.getCurrentPrices(true);
+    const isOpen = livePriceScraper.isMarketOpen();
+    const status = livePriceScraper.getMarketStatus();
+    
+    res.json({
+      success: true,
+      market_open: isOpen,
+      status: status,
+      prices_count: prices.length,
+      sample_price: prices.length > 0 ? prices[0] : null,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error forcing refresh:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+// ============ FLOOR SHEET ENDPOINTS ============
+const floorSheetScraper = require('./scrapers/market/floorSheetScraper');
+
+// Get floor sheet for today or a specific date
+app.get('/api/floorsheet', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const result = await floorSheetScraper.fetchFloorSheet(date);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get trades for a specific stock symbol
+app.get('/api/floorsheet/symbol/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { date } = req.query;
+    const trades = await floorSheetScraper.getTradesBySymbol(symbol, date);
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      date: date || 'today',
+      count: trades.length,
+      data: trades,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get top traded symbols by turnover
+app.get('/api/floorsheet/top', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const { date } = req.query;
+    const topSymbols = await floorSheetScraper.getTopTradedSymbols(limit, date);
+    res.json({
+      success: true,
+      date: date || 'today',
+      count: topSymbols.length,
+      data: topSymbols,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get market activity summary
+app.get('/api/floorsheet/activity', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const activity = await floorSheetScraper.getMarketActivity(date);
+    res.json({
+      success: true,
+      data: activity,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get floor sheet for a date range
+app.get('/api/floorsheet/range', async (req, res) => {
+  try {
+    const { from, to, limit = 20 } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ error: 'Both "from" and "to" dates are required (YYYY-MM-DD)' });
+    }
+    const result = await floorSheetScraper.fetchFloorSheetRange(from, to, parseInt(limit));
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// ============ BONUS SHARE ENDPOINTS ============
+const bonusScraper = require('./scrapers/events/bonusScraper');
+
+app.get('/api/bonus/all', async (req, res) => {
+  try {
+    const { fiscalYear } = req.query;
+    const result = await bonusScraper.fetchBonusShares(fiscalYear);
+    res.json({ success: result.success, count: result.count, data: result.data, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/bonus/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const bonuses = await bonusScraper.getBonusByCompany(symbol, limit);
+    res.json({ success: true, symbol: symbol.toUpperCase(), count: bonuses.length, data: bonuses, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/bonus/upcoming', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const upcoming = await bonusScraper.getUpcomingBonus(limit);
+    res.json({ success: true, count: upcoming.length, data: upcoming, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/bonus/history/:fiscalYear', async (req, res) => {
+  try {
+    const { fiscalYear } = req.params;
+    const history = await bonusScraper.getBonusHistory(fiscalYear);
+    res.json({ success: true, fiscal_year: fiscalYear, count: history.length, data: history, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/bonus/stats/:fiscalYear', async (req, res) => {
+  try {
+    const { fiscalYear } = req.params;
+    const stats = await bonusScraper.getTotalBonusShares(fiscalYear);
+    const history = await bonusScraper.getBonusHistory(fiscalYear);
+    res.json({ success: true, fiscal_year: fiscalYear, statistics: stats, top_bonus: history.slice(0, 10), timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/bonus/impact/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { price } = req.query;
+    if (!price) return res.status(400).json({ error: 'Price parameter required' });
+    const impact = await bonusScraper.calculateBonusImpact(symbol, parseFloat(price));
+    if (!impact) return res.status(404).json({ error: 'No bonus data found for symbol' });
+    res.json({ success: true, data: impact, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ DIVIDEND ENDPOINTS ============
+const dividendScraper = require('./scrapers/events/dividendScraper');
+
+app.get('/api/dividends/all', async (req, res) => {
+  try {
+    const { fiscalYear } = req.query;
+    const result = await dividendScraper.fetchDividends(fiscalYear);
+    res.json({ success: result.success, count: result.count, data: result.data, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/dividends/latest', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const dividends = await dividendScraper.getLatestDividends(limit);
+    res.json({ success: true, count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/dividends/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const dividends = await dividendScraper.getDividendsByCompany(symbol, limit);
+    res.json({ success: true, symbol: symbol.toUpperCase(), count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/dividends/fiscal/:year', async (req, res) => {
+  try {
+    const { year } = req.params;
+    const dividends = await dividendScraper.getDividendsByFiscalYear(year);
+    res.json({ success: true, fiscal_year: year, count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/dividends/yield/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { price } = req.query;
+    const result = await dividendScraper.calculateDividendYield(symbol, price ? parseFloat(price) : null);
+    if (!result) return res.status(404).json({ error: 'No dividend data found for symbol' });
+    res.json({ success: true, data: result, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ IPO ENDPOINTS ============
+const ipoScraper = require('./scrapers/events/ipoScraper');
+
+app.get('/api/ipo/all', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.fetchIPOData();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/ipo/upcoming', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getUpcomingIPOs();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/ipo/active', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getActiveIPOs();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/ipo/recent', async (req, res) => {
+  try {
+    const ipos = await ipoScraper.getRecentIPOs();
+    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
-  logger.error('Unhandled error:', { error: err.message, stack: err.stack });
-  res.status(500).json({ 
-    error: 'Internal server error', 
-    message: err.message, 
-    timestamp: new Date().toISOString() 
-  });
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error', message: err.message, timestamp: new Date().toISOString() });
 });
 
 app.use((req, res) => {
-  res.status(404).json({ 
-    error: 'Endpoint not found', 
-    path: req.url, 
-    timestamp: new Date().toISOString() 
-  });
+  res.status(404).json({ error: 'Endpoint not found', path: req.url, timestamp: new Date().toISOString() });
 });
 
 // ============ START SERVER ============
 const server = app.listen(PORT, '0.0.0.0', () => {
-  logger.info(`🚀 NEPSE Market Data API running on port ${PORT}`);
-  logger.info(`📋 IPO Companies: http://localhost:${PORT}/api/ipo/companies`);
-  logger.info(`🔍 IPO Debug: http://localhost:${PORT}/api/ipo/debug`);
-  logger.info(`📊 CDSC Status: http://localhost:${PORT}/api/ipo/cdsc-status`);
-  logger.info(`🔴 Live Prices: http://localhost:${PORT}/api/live/prices`);
-  logger.info(`📊 Market Summary: http://localhost:${PORT}/api/market/summary`);
-  logger.info(`📈 NEPSE Index: http://localhost:${PORT}/api/index/latest`);
-  logger.info(`📅 Events: http://localhost:${PORT}/api/events`);
-  logger.info(`📉 Chart: http://localhost:${PORT}/chart`);
-  logger.info(`💚 Health: http://localhost:${PORT}/health`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received. Closing server...');
-  server.close(() => {
-    logger.info('Server closed.');
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', () => {
-  logger.info('SIGINT received. Closing server...');
-  server.close(() => {
-    logger.info('Server closed.');
-    process.exit(0);
-  });
+  console.log(`\n🚀 NEPSE Market Data API running on port ${PORT}`);
+  console.log(`📊 Market Summary: http://localhost:${PORT}/api/market/summary`);
+  console.log(`📈 NEPSE Index: http://localhost:${PORT}/api/index/latest`);
+  console.log(`📅 Events: http://localhost:${PORT}/api/events`);
+  console.log(`📉 Chart: http://localhost:${PORT}/chart`);
+  console.log(`🔴 Live Price: http://localhost:${PORT}/api/live/price/NABIL`);
+  console.log(`📊 Universal Chart: http://localhost:${PORT}/chart/SOPL?period=1m`);
+  console.log(`💚 Health: http://localhost:${PORT}/health`);
 });
 
 module.exports = app;

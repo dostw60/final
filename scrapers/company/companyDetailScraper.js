@@ -31,15 +31,15 @@ class CompanyDetailScraper {
       });
 
       const $ = cheerio.load(response.data);
+      const pageText = $('body').text();
       
-      // Extract data using the actual page structure
       const result = {
         success: true,
         symbol: symbol.toUpperCase(),
-        company_details: this.extractCompanyDetails($),
-        financial_metrics: this.extractFinancialMetrics($),
-        price_data: this.extractPriceData($),
-        dividend_data: this.extractDividendData($),
+        company_details: this.extractCompanyDetails(pageText),
+        financial_metrics: this.extractFinancialMetrics(pageText),
+        price_data: this.extractPriceData(pageText),
+        dividend_data: this.extractDividendData(pageText),
         about: this.extractAbout($),
         announcements: [],
         news: [],
@@ -70,10 +70,9 @@ class CompanyDetailScraper {
   }
 
   /**
-   * Extract company details from the page
-   * Looking for pattern: Label: Value pairs in the main content
+   * Extract company details from page text
    */
-  extractCompanyDetails($) {
+  extractCompanyDetails(text) {
     const details = {
       name: '',
       symbol: '',
@@ -84,44 +83,35 @@ class CompanyDetailScraper {
       listed_shares: null
     };
 
-    // Get company name from the heading
-    const headingText = $('h1').first().text().trim();
-    if (headingText) {
-      // Extract name and symbol from "Company Name (SYMBOL)"
-      const match = headingText.match(/(.+?)\s*\((\w+)\)/);
-      if (match) {
-        details.name = match[1].trim();
-        details.symbol = match[2].trim();
-      } else {
-        details.name = headingText;
-      }
-    }
-
-    // Look for all text content and extract key-value pairs
-    // The page uses patterns like "Sector Manufacturing And Processing"
-    const pageText = $('body').text();
-    
-    // Extract sector
-    const sectorMatch = pageText.match(/Sector\s+([A-Za-z\s]+?)(?=\s+[A-Z][a-z]+|\s+Shares|\s+Market|\s+$)/);
+    // Extract sector - improved pattern
+    const sectorMatch = text.match(/Sector\s+([A-Za-z\s]+?)(?=\s+(?:Shares|Market|%|EPS|P\/E|Book|PBV|Year|Day|Fiscal|Total|Listed|Paidup|Manufacturing|Commercial|Development|Finance|Hotel|Hydro|Investment|Life|Microfinance|Mutual|Non-Life|Others|Preferred|Promotor|Trading|Capital|Corporate|Government))/);
     if (sectorMatch) {
       details.sector = sectorMatch[1].trim();
     }
 
+    // If sector not found, try alternative pattern
+    if (!details.sector) {
+      const altSectorMatch = text.match(/Sector\s+([A-Za-z\s]+?)(?=\d|$)/);
+      if (altSectorMatch) {
+        details.sector = altSectorMatch[1].trim();
+      }
+    }
+
     // Extract shares outstanding
-    const sharesMatch = pageText.match(/Shares Outstanding\s+([\d,]+\.?\d*)/);
+    const sharesMatch = text.match(/Shares Outstanding\s+([\d,]+\.?\d*)/);
     if (sharesMatch) {
       details.shares_outstanding = this.parseNumber(sharesMatch[1]);
       details.listed_shares = details.shares_outstanding;
     }
 
     // Extract paidup value
-    const paidupMatch = pageText.match(/Paidup Value\s+([\d,]+\.?\d*)/);
+    const paidupMatch = text.match(/Paidup Value\s+([\d,]+\.?\d*)/);
     if (paidupMatch) {
       details.paidup_value = this.parseNumber(paidupMatch[1]);
     }
 
     // Extract total paidup value
-    const totalPaidupMatch = pageText.match(/Total Paidup Value\s+([\d,]+\.?\d*)/);
+    const totalPaidupMatch = text.match(/Total Paidup Value\s+([\d,]+\.?\d*)/);
     if (totalPaidupMatch) {
       details.total_paidup_value = this.parseNumber(totalPaidupMatch[1]);
     }
@@ -130,9 +120,9 @@ class CompanyDetailScraper {
   }
 
   /**
-   * Extract financial metrics from the page
+   * Extract financial metrics
    */
-  extractFinancialMetrics($) {
+  extractFinancialMetrics(text) {
     const metrics = {
       eps: null,
       pe_ratio: null,
@@ -145,50 +135,48 @@ class CompanyDetailScraper {
       sector: null
     };
 
-    const pageText = $('body').text();
-
     // Extract EPS
-    const epsMatch = pageText.match(/EPS\s+([\d.]+)/);
+    const epsMatch = text.match(/EPS\s+([\d.]+)/);
     if (epsMatch) {
       metrics.eps = this.parseNumber(epsMatch[1]);
     }
 
     // Extract P/E Ratio
-    const peMatch = pageText.match(/P\/E Ratio\s+([\d.]+)/);
+    const peMatch = text.match(/P\/E Ratio\s+([\d.]+)/);
     if (peMatch) {
       metrics.pe_ratio = this.parseNumber(peMatch[1]);
     }
 
     // Extract Book Value
-    const bvMatch = pageText.match(/Book Value\s+([\d.]+)/);
+    const bvMatch = text.match(/Book Value\s+([\d.]+)/);
     if (bvMatch) {
       metrics.book_value = this.parseNumber(bvMatch[1]);
     }
 
     // Extract PBV
-    const pbvMatch = pageText.match(/PBV\s+([\d.]+)/);
+    const pbvMatch = text.match(/PBV\s+([\d.]+)/);
     if (pbvMatch) {
       metrics.pbv = this.parseNumber(pbvMatch[1]);
     }
 
     // Extract Market Capitalization
-    const mktCapMatch = pageText.match(/Market Capitalization\s+([\d,]+\.?\d*)/);
+    const mktCapMatch = text.match(/Market Capitalization\s+([\d,]+\.?\d*)/);
     if (mktCapMatch) {
       metrics.market_capitalization = this.parseNumber(mktCapMatch[1]);
     }
 
     // Extract 1 Year Yield
-    const yieldMatch = pageText.match(/1 Year Yield\s+([\d.]+%)/);
+    const yieldMatch = text.match(/1 Year Yield\s+([\d.]+%)/);
     if (yieldMatch) {
       metrics.year_1_yield = this.parseNumber(yieldMatch[1]);
     }
 
-    // Extract fiscal year and quarter from EPS context
-    const fyMatch = pageText.match(/FY:(\d{2}-\d{2})/);
+    // Extract fiscal year and quarter
+    const fyMatch = text.match(/FY:(\d{2}-\d{2})/);
     if (fyMatch) {
       metrics.fiscal_year = fyMatch[1];
     }
-    const qMatch = pageText.match(/Q:(\d+)/);
+    const qMatch = text.match(/Q:(\d+)/);
     if (qMatch) {
       metrics.quarter = qMatch[1];
     }
@@ -197,9 +185,9 @@ class CompanyDetailScraper {
   }
 
   /**
-   * Extract price and trading data
+   * Extract price and trading data - FIXED
    */
-  extractPriceData($) {
+  extractPriceData(text) {
     const data = {
       market_price: null,
       percent_change: null,
@@ -215,46 +203,44 @@ class CompanyDetailScraper {
       low: null
     };
 
-    const pageText = $('body').text();
-
     // Extract market price
-    const priceMatch = pageText.match(/Market Price\s+([\d,]+\.?\d*)/);
+    const priceMatch = text.match(/Market Price\s+([\d,]+\.?\d*)/);
     if (priceMatch) {
       data.market_price = this.parseNumber(priceMatch[1]);
     }
 
-    // Extract percent change
-    const changeMatch = pageText.match(/% Change\s+([\d.-]+)%/);
+    // Extract percent change - FIXED: handle negative values and % symbol
+    const changeMatch = text.match(/% Change\s+(-?[\d.]+)%/);
     if (changeMatch) {
       data.percent_change = this.parseNumber(changeMatch[1]);
     }
 
     // Extract last traded on
-    const dateMatch = pageText.match(/Last Traded On\s+([\d/]+\s+[\d:]+)/);
+    const dateMatch = text.match(/Last Traded On\s+([\d/]+\s+[\d:]+)/);
     if (dateMatch) {
       data.last_traded_on = dateMatch[1];
     }
 
-    // Extract 52 week high-low
-    const highLowMatch = pageText.match(/52 Weeks High - Low\s+([\d.]+)-([\d.]+)/);
+    // Extract 52 week high-low - FIXED: handle the pattern
+    const highLowMatch = text.match(/52 Weeks High - Low\s+([\d.]+)-([\d.]+)/);
     if (highLowMatch) {
       data.week_52_high = this.parseNumber(highLowMatch[1]);
       data.week_52_low = this.parseNumber(highLowMatch[2]);
     }
 
     // Extract averages
-    const avg180Match = pageText.match(/180 Day Average\s+([\d,]+\.?\d*)/);
+    const avg180Match = text.match(/180 Day Average\s+([\d,]+\.?\d*)/);
     if (avg180Match) {
       data.day_180_avg = this.parseNumber(avg180Match[1]);
     }
 
-    const avg120Match = pageText.match(/120 Day Average\s+([\d,]+\.?\d*)/);
+    const avg120Match = text.match(/120 Day Average\s+([\d,]+\.?\d*)/);
     if (avg120Match) {
       data.day_120_avg = this.parseNumber(avg120Match[1]);
     }
 
     // Extract volume
-    const volMatch = pageText.match(/30-Day Avg Volume\s+([\d,]+\.?\d*)/);
+    const volMatch = text.match(/30-Day Avg Volume\s+([\d,]+\.?\d*)/);
     if (volMatch) {
       data.day_30_avg_volume = this.parseNumber(volMatch[1]);
     }
@@ -263,9 +249,9 @@ class CompanyDetailScraper {
   }
 
   /**
-   * Extract dividend and bonus data
+   * Extract dividend data - FIXED
    */
-  extractDividendData($) {
+  extractDividendData(text) {
     const data = {
       percent_dividend: null,
       percent_bonus: null,
@@ -273,52 +259,45 @@ class CompanyDetailScraper {
       dividend_history: []
     };
 
-    const pageText = $('body').text();
-
-    // Extract dividend
-    const divMatch = pageText.match(/% Dividend\s+([\d.]+)/);
-    if (divMatch) {
+    // Extract dividend - look for # pattern or actual value
+    const divMatch = text.match(/% Dividend\s+(?:#|([\d.]+))/);
+    if (divMatch && divMatch[1]) {
       data.percent_dividend = this.parseNumber(divMatch[1]);
     }
 
     // Extract bonus
-    const bonusMatch = pageText.match(/% Bonus\s+([\d.]+)/);
-    if (bonusMatch) {
+    const bonusMatch = text.match(/% Bonus\s+(?:#|([\d.]+))/);
+    if (bonusMatch && bonusMatch[1]) {
       data.percent_bonus = this.parseNumber(bonusMatch[1]);
     }
 
     // Extract right share
-    const rightMatch = pageText.match(/Right Share\s+([\d:]+)/);
-    if (rightMatch) {
+    const rightMatch = text.match(/Right Share\s+(?:#|([\d:]+))/);
+    if (rightMatch && rightMatch[1]) {
       data.right_share = rightMatch[1];
     }
 
-    // Try to extract dividend history from tables
-    $('table').each((i, table) => {
-      const tableText = $(table).text();
-      if (tableText.includes('Fiscal Year') && 
-          (tableText.includes('Dividend') || tableText.includes('Bonus'))) {
-        
-        $(table).find('tr').each((j, row) => {
-          if (j === 0) return; // Skip header
-          const cols = $(row).find('td');
-          if (cols.length >= 2) {
-            const fiscalYear = $(cols[0]).text().trim();
-            const dividend = this.parseNumber($(cols[1]).text());
-            const bonus = cols.length > 2 ? this.parseNumber($(cols[2]).text()) : 0;
-            
-            if (fiscalYear && (dividend !== null || bonus !== null)) {
-              data.dividend_history.push({
-                fiscal_year: fiscalYear,
-                dividend_percent: dividend || 0,
-                bonus_percent: bonus || 0,
-                total_percent: (dividend || 0) + (bonus || 0)
-              });
-            }
-          }
+    // Extract dividend history from the page
+    // Look for patterns like "081-082 26.00 10.00 36.00"
+    const historyRegex = /(\d{2}-\d{2})\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/g;
+    let match;
+    while ((match = historyRegex.exec(text)) !== null) {
+      // Check if this looks like dividend data
+      const fiscalYear = match[1];
+      const dividend = this.parseNumber(match[2]);
+      const bonus = this.parseNumber(match[3]);
+      const total = this.parseNumber(match[4]);
+      
+      // Only add if it's a valid fiscal year format
+      if (fiscalYear.match(/\d{2}-\d{2}/)) {
+        data.dividend_history.push({
+          fiscal_year: fiscalYear,
+          dividend_percent: dividend || 0,
+          bonus_percent: bonus || 0,
+          total_percent: total || 0
         });
       }
-    });
+    }
 
     return data;
   }
@@ -329,17 +308,24 @@ class CompanyDetailScraper {
   extractAbout($) {
     let aboutText = '';
     
-    // Look for about section
-    $('div').each((i, el) => {
+    // Look for about section in the page
+    $('div, p, .description, .about').each((i, el) => {
       const text = $(el).text().trim();
-      if (text.includes('About') && text.length > 50) {
-        // Extract the description
-        const aboutMatch = text.match(/About[^]*?([A-Z][^.]+\.[^.]*)/);
-        if (aboutMatch) {
-          aboutText = aboutMatch[1].trim();
+      if (text.length > 100 && 
+          (text.includes('About') || text.includes('Company') || text.includes('Limited'))) {
+        // Try to get meaningful text
+        const sentences = text.split(/[.!?]+/);
+        if (sentences.length > 1) {
+          aboutText = sentences.slice(0, 3).join('. ') + '.';
         }
       }
     });
+
+    // If no about found, try meta description
+    if (!aboutText) {
+      const metaDesc = $('meta[name="description"]').attr('content');
+      if (metaDesc) aboutText = metaDesc;
+    }
 
     return aboutText;
   }

@@ -1,8 +1,9 @@
-// index.js - COMPLETE PRODUCTION READY VERSION WITH UNIVERSAL CHART
+// index.js - COMPLETE PRODUCTION READY VERSION WITH UNIVERSAL CHART & COMPANY DETAILS
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -216,6 +217,311 @@ function getStartDate(period) {
   }
   return date;
 }
+
+// ============ COMPANY DETAIL SCRAPER CLASS ============
+class CompanyDetailScraper {
+  constructor() {
+    this.baseUrl = 'https://merolagani.com/CompanyDetail.aspx';
+    this.cache = new Map();
+    this.cacheTTL = 3600000; // 1 hour
+  }
+
+  async fetchCompanyDetails(symbol, forceFresh = false) {
+    try {
+      const cacheKey = `company_${symbol.toUpperCase()}`;
+      
+      if (!forceFresh && this.cache.has(cacheKey)) {
+        const cached = this.cache.get(cacheKey);
+        if (Date.now() - cached.timestamp < this.cacheTTL) {
+          return cached.data;
+        }
+      }
+
+      const response = await axios.get(this.baseUrl, {
+        params: { symbol: symbol.toUpperCase() },
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
+
+      const $ = cheerio.load(response.data);
+      const pageText = $('body').text();
+      
+      const result = {
+        success: true,
+        symbol: symbol.toUpperCase(),
+        company_details: this.extractCompanyDetails(pageText),
+        financial_metrics: this.extractFinancialMetrics(pageText),
+        price_data: this.extractPriceData(pageText),
+        dividend_data: this.extractDividendData(pageText),
+        about: this.extractAbout($),
+        announcements: [],
+        news: [],
+        price_history: [],
+        floorsheet: [],
+        agm: [],
+        quarterly_report: [],
+        tender_auction: [],
+        major_shareholders: []
+      };
+
+      this.cache.set(cacheKey, {
+        data: result,
+        timestamp: Date.now()
+      });
+
+      return result;
+
+    } catch (error) {
+      console.error(`Error fetching company details for ${symbol}:`, error.message);
+      return {
+        success: false,
+        error: error.message,
+        symbol: symbol.toUpperCase()
+      };
+    }
+  }
+
+  extractCompanyDetails(text) {
+    const details = {
+      name: '',
+      symbol: '',
+      sector: '',
+      shares_outstanding: null,
+      paidup_value: null,
+      total_paidup_value: null,
+      listed_shares: null
+    };
+
+    const sectorMatch = text.match(/Sector\s+([A-Za-z\s]+?)(?=\s+(?:Shares|Market|%|EPS|P\/E|Book|PBV|Year|Day|Fiscal|Total|Listed|Paidup|Manufacturing|Commercial|Development|Finance|Hotel|Hydro|Investment|Life|Microfinance|Mutual|Non-Life|Others|Preferred|Promotor|Trading|Capital|Corporate|Government))/);
+    if (sectorMatch) {
+      details.sector = sectorMatch[1].trim();
+    }
+
+    if (!details.sector) {
+      const altSectorMatch = text.match(/Sector\s+([A-Za-z\s]+?)(?=\d|$)/);
+      if (altSectorMatch) {
+        details.sector = altSectorMatch[1].trim();
+      }
+    }
+
+    const sharesMatch = text.match(/Shares Outstanding\s+([\d,]+\.?\d*)/);
+    if (sharesMatch) {
+      details.shares_outstanding = this.parseNumber(sharesMatch[1]);
+      details.listed_shares = details.shares_outstanding;
+    }
+
+    const paidupMatch = text.match(/Paidup Value\s+([\d,]+\.?\d*)/);
+    if (paidupMatch) {
+      details.paidup_value = this.parseNumber(paidupMatch[1]);
+    }
+
+    const totalPaidupMatch = text.match(/Total Paidup Value\s+([\d,]+\.?\d*)/);
+    if (totalPaidupMatch) {
+      details.total_paidup_value = this.parseNumber(totalPaidupMatch[1]);
+    }
+
+    return details;
+  }
+
+  extractFinancialMetrics(text) {
+    const metrics = {
+      eps: null,
+      pe_ratio: null,
+      book_value: null,
+      pbv: null,
+      market_capitalization: null,
+      year_1_yield: null,
+      fiscal_year: null,
+      quarter: null,
+      sector: null
+    };
+
+    const epsMatch = text.match(/EPS\s+([\d.]+)/);
+    if (epsMatch) {
+      metrics.eps = this.parseNumber(epsMatch[1]);
+    }
+
+    const peMatch = text.match(/P\/E Ratio\s+([\d.]+)/);
+    if (peMatch) {
+      metrics.pe_ratio = this.parseNumber(peMatch[1]);
+    }
+
+    const bvMatch = text.match(/Book Value\s+([\d.]+)/);
+    if (bvMatch) {
+      metrics.book_value = this.parseNumber(bvMatch[1]);
+    }
+
+    const pbvMatch = text.match(/PBV\s+([\d.]+)/);
+    if (pbvMatch) {
+      metrics.pbv = this.parseNumber(pbvMatch[1]);
+    }
+
+    const mktCapMatch = text.match(/Market Capitalization\s+([\d,]+\.?\d*)/);
+    if (mktCapMatch) {
+      metrics.market_capitalization = this.parseNumber(mktCapMatch[1]);
+    }
+
+    const yieldMatch = text.match(/1 Year Yield\s+([\d.]+%)/);
+    if (yieldMatch) {
+      metrics.year_1_yield = this.parseNumber(yieldMatch[1]);
+    }
+
+    const fyMatch = text.match(/FY:(\d{2}-\d{2})/);
+    if (fyMatch) {
+      metrics.fiscal_year = fyMatch[1];
+    }
+    const qMatch = text.match(/Q:(\d+)/);
+    if (qMatch) {
+      metrics.quarter = qMatch[1];
+    }
+
+    return metrics;
+  }
+
+  extractPriceData(text) {
+    const data = {
+      market_price: null,
+      percent_change: null,
+      last_traded_on: null,
+      week_52_high: null,
+      week_52_low: null,
+      day_180_avg: null,
+      day_120_avg: null,
+      day_30_avg_volume: null,
+      previous_close: null,
+      open: null,
+      high: null,
+      low: null
+    };
+
+    const priceMatch = text.match(/Market Price\s+([\d,]+\.?\d*)/);
+    if (priceMatch) {
+      data.market_price = this.parseNumber(priceMatch[1]);
+    }
+
+    const changeMatch = text.match(/% Change\s+(-?[\d.]+)%/);
+    if (changeMatch) {
+      data.percent_change = this.parseNumber(changeMatch[1]);
+    }
+
+    const dateMatch = text.match(/Last Traded On\s+([\d/]+\s+[\d:]+)/);
+    if (dateMatch) {
+      data.last_traded_on = dateMatch[1];
+    }
+
+    const highLowMatch = text.match(/52 Weeks High - Low\s+([\d.]+)-([\d.]+)/);
+    if (highLowMatch) {
+      data.week_52_high = this.parseNumber(highLowMatch[1]);
+      data.week_52_low = this.parseNumber(highLowMatch[2]);
+    }
+
+    const avg180Match = text.match(/180 Day Average\s+([\d,]+\.?\d*)/);
+    if (avg180Match) {
+      data.day_180_avg = this.parseNumber(avg180Match[1]);
+    }
+
+    const avg120Match = text.match(/120 Day Average\s+([\d,]+\.?\d*)/);
+    if (avg120Match) {
+      data.day_120_avg = this.parseNumber(avg120Match[1]);
+    }
+
+    const volMatch = text.match(/30-Day Avg Volume\s+([\d,]+\.?\d*)/);
+    if (volMatch) {
+      data.day_30_avg_volume = this.parseNumber(volMatch[1]);
+    }
+
+    return data;
+  }
+
+  extractDividendData(text) {
+    const data = {
+      percent_dividend: null,
+      percent_bonus: null,
+      right_share: null,
+      dividend_history: []
+    };
+
+    const divMatch = text.match(/% Dividend\s+(?:#|([\d.]+))/);
+    if (divMatch && divMatch[1]) {
+      data.percent_dividend = this.parseNumber(divMatch[1]);
+    }
+
+    const bonusMatch = text.match(/% Bonus\s+(?:#|([\d.]+))/);
+    if (bonusMatch && bonusMatch[1]) {
+      data.percent_bonus = this.parseNumber(bonusMatch[1]);
+    }
+
+    const rightMatch = text.match(/Right Share\s+(?:#|([\d:]+))/);
+    if (rightMatch && rightMatch[1]) {
+      data.right_share = rightMatch[1];
+    }
+
+    const historyRegex = /(\d{2}-\d{2})\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/g;
+    let match;
+    while ((match = historyRegex.exec(text)) !== null) {
+      const fiscalYear = match[1];
+      const dividend = this.parseNumber(match[2]);
+      const bonus = this.parseNumber(match[3]);
+      const total = this.parseNumber(match[4]);
+      
+      if (fiscalYear.match(/\d{2}-\d{2}/)) {
+        data.dividend_history.push({
+          fiscal_year: fiscalYear,
+          dividend_percent: dividend || 0,
+          bonus_percent: bonus || 0,
+          total_percent: total || 0
+        });
+      }
+    }
+
+    return data;
+  }
+
+  extractAbout($) {
+    let aboutText = '';
+    
+    $('div, p, .description, .about').each((i, el) => {
+      const text = $(el).text().trim();
+      if (text.length > 100 && 
+          (text.includes('About') || text.includes('Company') || text.includes('Limited'))) {
+        const sentences = text.split(/[.!?]+/);
+        if (sentences.length > 1) {
+          aboutText = sentences.slice(0, 3).join('. ') + '.';
+        }
+      }
+    });
+
+    if (!aboutText) {
+      const metaDesc = $('meta[name="description"]').attr('content');
+      if (metaDesc) aboutText = metaDesc;
+    }
+
+    return aboutText;
+  }
+
+  parseNumber(text) {
+    if (!text) return null;
+    if (typeof text === 'number') return isNaN(text) ? null : text;
+    
+    const cleaned = String(text).replace(/,/g, '').replace(/\s/g, '').replace(/[^0-9.-]/g, '');
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? null : parsed;
+  }
+
+  clearCache(symbol = null) {
+    if (symbol) {
+      this.cache.delete(`company_${symbol.toUpperCase()}`);
+    } else {
+      this.cache.clear();
+    }
+  }
+}
+
+const companyDetailScraper = new CompanyDetailScraper();
 
 // ============ MARKET SUMMARY ENDPOINTS ============
 app.get('/api/market/summary', async (req, res) => {
@@ -506,6 +812,169 @@ app.post('/api/companies/batch', async (req, res) => {
   }
 });
 
+// ============ COMPANY DETAIL SCRAPER ENDPOINTS ============
+
+// Get complete company details
+app.get('/api/company/detail/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const forceFresh = req.query.fresh === 'true';
+    
+    const result = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
+    
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(404).json({
+        success: false,
+        error: `Company "${symbol}" not found or data unavailable`,
+        symbol: symbol.toUpperCase()
+      });
+    }
+  } catch (error) {
+    console.error(`Error fetching company detail for ${req.params.symbol}:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      symbol: req.params.symbol.toUpperCase()
+    });
+  }
+});
+
+// Get company details with live market data combined
+app.get('/api/company/full/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const forceFresh = req.query.fresh === 'true';
+    
+    const detailResult = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
+    const livePrice = await livePriceScraper.getStockPrice(symbol);
+    
+    const response = {
+      success: true,
+      symbol: symbol.toUpperCase(),
+      company: detailResult.success ? detailResult.company_details : null,
+      live_data: livePrice || null,
+      financials: detailResult.success ? detailResult.financial_metrics : null,
+      price_data: detailResult.success ? detailResult.price_data : null,
+      dividend_data: detailResult.success ? detailResult.dividend_data : null,
+      announcements: detailResult.success ? detailResult.announcements : null,
+      news: detailResult.success ? detailResult.news : null,
+      shareholders: detailResult.success ? detailResult.major_shareholders : null,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json(response);
+  } catch (error) {
+    console.error(`Error fetching full company data for ${req.params.symbol}:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      symbol: req.params.symbol.toUpperCase()
+    });
+  }
+});
+
+// Get company overview (summary)
+app.get('/api/company/overview/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const forceFresh = req.query.fresh === 'true';
+    
+    const result = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
+    
+    if (result.success) {
+      const overview = {
+        symbol: result.symbol,
+        name: result.company_details.name || symbol.toUpperCase(),
+        sector: result.company_details.sector,
+        market_price: result.price_data.market_price,
+        change_percent: result.price_data.percent_change,
+        shares_outstanding: result.company_details.shares_outstanding,
+        market_cap: result.financial_metrics.market_capitalization,
+        eps: result.financial_metrics.eps,
+        pe_ratio: result.financial_metrics.pe_ratio,
+        book_value: result.financial_metrics.book_value,
+        pbv: result.financial_metrics.pbv,
+        dividend_percent: result.dividend_data.percent_dividend,
+        bonus_percent: result.dividend_data.percent_bonus,
+        week_52_high: result.price_data.week_52_high,
+        week_52_low: result.price_data.week_52_low,
+        last_traded_on: result.price_data.last_traded_on
+      };
+      
+      res.json({
+        success: true,
+        data: overview,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(404).json(result);
+    }
+  } catch (error) {
+    console.error(`Error fetching overview for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear company cache
+app.post('/api/company/cache/clear', async (req, res) => {
+  try {
+    const { symbol } = req.body;
+    companyDetailScraper.clearCache(symbol);
+    res.json({
+      success: true,
+      message: symbol ? `Cache cleared for ${symbol}` : 'All company cache cleared',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error clearing company cache:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Debug endpoint to see raw page structure
+app.get('/api/company/debug/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    
+    const response = await axios.get('https://merolagani.com/CompanyDetail.aspx', {
+      params: { symbol: symbol.toUpperCase() },
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+
+    const $ = cheerio.load(response.data);
+    const bodyText = $('body').text();
+    
+    const patterns = [];
+    const regex = /([A-Za-z\s]+?)\s+([\d,]+\.?\d*%?)/g;
+    let match;
+    while ((match = regex.exec(bodyText)) !== null) {
+      patterns.push({
+        label: match[1].trim(),
+        value: match[2].trim()
+      });
+    }
+
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      html_length: response.data.length,
+      body_text_length: bodyText.length,
+      sample_text: bodyText.substring(0, 2000),
+      patterns: patterns.slice(0, 50),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Debug error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============ STOCK EVENT ENDPOINTS ============
 async function fetchStockEvents(fromDate, toDate) {
   const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
@@ -646,7 +1115,6 @@ app.get('/api/events/dividends', async (req, res) => {
   }
 });
 
-// UPDATED AGM ENDPOINT - Shows newest events first
 app.get('/api/events/agm', async (req, res) => {
   try {
     const { limit = 100, fresh = false } = req.query;
@@ -678,12 +1146,10 @@ app.get('/api/events/agm', async (req, res) => {
       }
     }
     
-    // Filter AGM events
     const agmEvents = events.filter(event => 
       event.announcementDetail.toLowerCase().includes('agm')
     );
     
-    // Sort by date (NEWEST first)
     agmEvents.sort((a, b) => new Date(b.actionDate) - new Date(a.actionDate));
     
     const limited = agmEvents.slice(0, parseInt(limit));
@@ -699,65 +1165,6 @@ app.get('/api/events/agm', async (req, res) => {
     
   } catch (error) {
     console.error('Error fetching AGM events:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Debug endpoint - check AGM data directly
-app.get('/api/debug/agm', async (req, res) => {
-  try {
-    const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
-      params: { type: 'stock_event', fromDate: '1/1/2025', toDate: '12/31/2027' },
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
-    });
-    
-    const allEvents = response.data.detail || [];
-    const agmEvents = allEvents.filter(e => e.announcementDetail.toLowerCase().includes('agm'));
-    const tarakholaEvents = agmEvents.filter(e => e.announcementDetail.toLowerCase().includes('tarakhola'));
-    
-    res.json({
-      total_events: allEvents.length,
-      total_agm: agmEvents.length,
-      tarakhola_agm: tarakholaEvents,
-      sample_agm: agmEvents.slice(0, 5)
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Search AGM events by company name
-app.get('/api/agm/search', async (req, res) => {
-  try {
-    const { q } = req.query;
-    if (!q || q.length < 3) {
-      return res.status(400).json({ error: 'Search query required (min 3 characters)' });
-    }
-    
-    const response = await axios.get('https://www.merolagani.com/handlers/webrequesthandler.ashx', {
-      params: { type: 'stock_event', fromDate: '1/1/2025', toDate: '12/31/2027' },
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
-    });
-    
-    const events = response.data.detail || [];
-    const agmEvents = events.filter(event => 
-      event.announcementDetail.toLowerCase().includes('agm') &&
-      event.announcementDetail.toLowerCase().includes(q.toLowerCase())
-    );
-    
-    res.json({
-      success: true,
-      query: q,
-      count: agmEvents.length,
-      data: agmEvents,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Error searching AGM events:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -888,126 +1295,6 @@ app.post('/api/candles/bulk', async (req, res) => {
     res.json({ success: true, period: period, total_requested: symbols.length, successful: successCount, failed: symbols.length - successCount, data: results, timestamp: new Date().toISOString() });
   } catch (error) {
     console.error('Error in bulk candles:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ IPO RESULT SCRAPER ENDPOINTS ============
-const ipoResultScraper = require('./scrapers/ipo/ipoResultScraper');
-
-// Get IPO result from CDSC for a specific company
-app.get('/api/ipo/cdsc/:name', async (req, res) => {
-  try {
-    const { name } = req.params;
-    const result = await ipoResultScraper.fetchIPOResult(name);
-    
-    if (result.found) {
-      res.json({
-        success: true,
-        data: result,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      res.json({
-        success: false,
-        message: 'No IPO result found for the specified company',
-        data: result,
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-  } catch (error) {
-    console.error('Error fetching IPO result:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get bulk IPO results from CDSC
-app.post('/api/ipo/cdsc/bulk', async (req, res) => {
-  try {
-    const { names } = req.body;
-    
-    if (!names || !Array.isArray(names) || names.length === 0) {
-      return res.status(400).json({
-        error: 'Names array required',
-        example: { names: ['SOPAN', 'APOLLO', 'OM MEGASHREE'] }
-      });
-    }
-    
-    if (names.length > 10) {
-      return res.status(400).json({ error: 'Maximum 10 names per request' });
-    }
-    
-    const results = await ipoResultScraper.fetchBulkIPOResults(names);
-    
-    res.json({
-      success: true,
-      total_requested: names.length,
-      successful: results.filter(r => r.found).length,
-      failed: results.filter(r => !r.found).length,
-      data: results,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Error fetching bulk IPO results:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get all IPOs from CDSC
-app.get('/api/ipo/cdsc/all', async (req, res) => {
-  try {
-    const result = await ipoResultScraper.getAllIPOs();
-    
-    res.json({
-      success: true,
-      data: result,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Error fetching all IPOs from CDSC:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Search IPO by company name
-app.get('/api/ipo/cdsc/search', async (req, res) => {
-  try {
-    const { q } = req.query;
-    
-    if (!q || q.length < 3) {
-      return res.status(400).json({ 
-        error: 'Search query required (min 3 characters)' 
-      });
-    }
-    
-    const result = await ipoResultScraper.searchIPOByCompany(q);
-    
-    res.json({
-      success: true,
-      data: result,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Error searching IPO:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Clear IPO cache
-app.post('/api/ipo/cdsc/cache/clear', async (req, res) => {
-  try {
-    await ipoResultScraper.clearCache();
-    res.json({
-      success: true,
-      message: 'IPO cache cleared successfully',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error clearing IPO cache:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1179,7 +1466,6 @@ app.get('/chart/:symbol?', (req, res) => {
             infoDiv.innerHTML = 'Loading data...';
             currentPeriod = period;
             
-            // Update active button
             document.querySelectorAll('.period-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.period === period);
             });
@@ -1193,7 +1479,6 @@ app.get('/chart/:symbol?', (req, res) => {
                 console.log('Data received:', data);
                 
                 if (data.success && data.data && data.data.length > 0) {
-                    // Format data for chart
                     const chartData = data.data.map(c => ({
                         time: c.date,
                         open: c.open,
@@ -1205,7 +1490,6 @@ app.get('/chart/:symbol?', (req, res) => {
                     series.setData(chartData);
                     chart.timeScale().fitContent();
                     
-                    // Calculate stats
                     const latest = data.data[data.data.length - 1];
                     const first = data.data[0];
                     const change = ((latest.close - first.open) / first.open * 100).toFixed(2);
@@ -1213,7 +1497,6 @@ app.get('/chart/:symbol?', (req, res) => {
                     const lowest = Math.min(...data.data.map(c => c.low));
                     const totalVolume = data.data.reduce((sum, c) => sum + c.volume, 0);
                     
-                    // Update stats
                     document.getElementById('stats').innerHTML = \`
                         <div class="stat-card"><div class="stat-value">Rs. \${latest.close.toFixed(2)}</div><div class="stat-label">Current Price</div></div>
                         <div class="stat-card"><div class="stat-value \${change >= 0 ? 'positive' : 'negative'}">\${change >= 0 ? '+' : ''}\${change}%</div><div class="stat-label">Change</div></div>
@@ -1233,12 +1516,10 @@ app.get('/chart/:symbol?', (req, res) => {
             }
         }
         
-        // Enter key support
         document.getElementById('symbolInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') loadSymbol();
         });
         
-        // Period button listeners
         document.querySelectorAll('.period-btn').forEach(btn => {
             btn.addEventListener('click', () => loadChart(btn.dataset.period));
         });
@@ -1248,6 +1529,57 @@ app.get('/chart/:symbol?', (req, res) => {
     </script>
 </body>
 </html>`);
+});
+
+// ============ MARKET STATUS ENDPOINTS ============
+app.get('/api/market/status/debug', (req, res) => {
+  try {
+    const status = livePriceScraper.getMarketStatus();
+    res.json({
+      success: true,
+      data: status,
+      server_time: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting market status:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/market/is-open', (req, res) => {
+  try {
+    const isOpen = livePriceScraper.isMarketOpen();
+    const status = livePriceScraper.getMarketStatus();
+    res.json({
+      success: true,
+      market_open: isOpen,
+      details: status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error checking market status:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/market/force-refresh', async (req, res) => {
+  try {
+    const prices = await livePriceScraper.getCurrentPrices(true);
+    const isOpen = livePriceScraper.isMarketOpen();
+    const status = livePriceScraper.getMarketStatus();
+    
+    res.json({
+      success: true,
+      market_open: isOpen,
+      status: status,
+      prices_count: prices.length,
+      sample_price: prices.length > 0 ? prices[0] : null,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error forcing refresh:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============ HEALTH & ROOT ============
@@ -1309,33 +1641,6 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/live/summary" target="_blank">${baseUrl}/api/live/summary</a></span><div class="description">Live market summary</div></li>
                 </ul>
             </div>
-            <div class="card"><div class="card-title"><span class="emoji">🚀</span>IPO Announcements</div>
-                <ul class="endpoint-list">
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/all" target="_blank">${baseUrl}/api/ipo/all</a></span><div class="description">All IPO announcements</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/upcoming" target="_blank">${baseUrl}/api/ipo/upcoming</a></span><div class="description">Upcoming IPOs</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/active" target="_blank">${baseUrl}/api/ipo/active</a></span><div class="description">Currently active IPOs</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/ipo/recent" target="_blank">${baseUrl}/api/ipo/recent</a></span><div class="description">Recent IPOs (last 6 months)</div></li>
-                </ul>
-            </div>
-            <div class="card"><div class="card-title"><span class="emoji">💰</span>Dividends</div>
-                <ul class="endpoint-list">
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/all" target="_blank">${baseUrl}/api/dividends/all</a></span><div class="description">All dividend announcements</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/latest?limit=20" target="_blank">${baseUrl}/api/dividends/latest?limit=20</a></span><div class="description">Latest dividends (6 months)</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/company/NABIL" target="_blank">${baseUrl}/api/dividends/company/:symbol</a></span><div class="description">Dividends by company</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/fiscal/2079/80" target="_blank">${baseUrl}/api/dividends/fiscal/:year</a></span><div class="description">Dividends by fiscal year</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/dividends/yield/NABIL?price=500" target="_blank">${baseUrl}/api/dividends/yield/:symbol?price=500</a></span><div class="description">Dividend yield calculation</div></li>
-                </ul>
-            </div>
-            <div class="card"><div class="card-title"><span class="emoji">🎁</span>Bonus Shares</div>
-                <ul class="endpoint-list">
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/all" target="_blank">${baseUrl}/api/bonus/all</a></span><div class="description">All bonus announcements</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/company/NABIL" target="_blank">${baseUrl}/api/bonus/company/:symbol</a></span><div class="description">Bonus by company</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/upcoming" target="_blank">${baseUrl}/api/bonus/upcoming</a></span><div class="description">Upcoming bonus announcements</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/history/2079/80" target="_blank">${baseUrl}/api/bonus/history/:fiscalYear</a></span><div class="description">Bonus history by fiscal year</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/stats/2079/80" target="_blank">${baseUrl}/api/bonus/stats/:fiscalYear</a></span><div class="description">Bonus statistics</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/bonus/impact/NABIL?price=500" target="_blank">${baseUrl}/api/bonus/impact/:symbol?price=500</a></span><div class="description">Calculate bonus impact on price</div></li>
-                </ul>
-            </div>
             <div class="card"><div class="card-title"><span class="emoji">📈</span>Market Data</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/summary" target="_blank">${baseUrl}/api/market/summary</a></span><div class="description">Complete market summary</div></li>
@@ -1348,18 +1653,16 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/active" target="_blank">${baseUrl}/api/market/active</a></span><div class="description">Most active stocks</div></li>
                 </ul>
             </div>
-            <div class="card"><div class="card-title"><span class="emoji">📊</span>Stocks</div>
-                <ul class="endpoint-list">
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stocks" target="_blank">${baseUrl}/api/stocks</a></span><div class="description">All stocks data</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/stock/NABIL" target="_blank">${baseUrl}/api/stock/:symbol</a></span><div class="description">Specific stock data (e.g., NABIL)</div></li>
-                </ul>
-            </div>
             <div class="card"><div class="card-title"><span class="emoji">🏢</span>Companies</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/search?q=NABIL" target="_blank">${baseUrl}/api/companies/search?q=NABIL</a></span><div class="description">Search companies</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/companies/all" target="_blank">${baseUrl}/api/companies/all</a></span><div class="description">All companies list</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/company/NABIL" target="_blank">${baseUrl}/api/company/:symbol</a></span><div class="description">Company details with market data</div></li>
                     <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/companies/batch</span><div class="description">Batch company details (POST with JSON body)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/company/detail/NABIL" target="_blank">${baseUrl}/api/company/detail/:symbol</a></span><div class="description">Complete company details from CompanyDetail.aspx</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/company/full/NABIL" target="_blank">${baseUrl}/api/company/full/:symbol</a></span><div class="description">Company details + live market data combined</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/company/overview/NABIL" target="_blank">${baseUrl}/api/company/overview/:symbol</a></span><div class="description">Company overview summary</div></li>
+                    <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/company/cache/clear</span><div class="description">Clear cached company data</div></li>
                 </ul>
             </div>
             <div class="card"><div class="card-title"><span class="emoji">📅</span>Corporate Events</div>
@@ -1374,27 +1677,6 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/stats" target="_blank">${baseUrl}/api/events/stats</a></span><div class="description">Event statistics</div></li>
                 </ul>
             </div>
-            <!-- Add to endpoints-grid section -->
-<div class="card">
-    <div class="card-title"><span class="emoji">🏢</span>Company Details (Full)</div>
-    <ul class="endpoint-list">
-        <li>
-            <span class="method get">GET</span>
-            <span class="endpoint-url">https://final-ocai.onrender.com/api/company/detail/:symbol</span>
-            <div class="description">Complete company details from CompanyDetail.aspx</div>
-        </li>
-        <li>
-            <span class="method get">GET</span>
-            <span class="endpoint-url">https://final-ocai.onrender.com/api/company/full/:symbol</span>
-            <div class="description">Company details + live market data combined</div>
-        </li>
-        <li>
-            <span class="method post">POST</span>
-            <span class="endpoint-url">https://final-ocai.onrender.com/api/company/cache/clear</span>
-            <div class="description">Clear cached company data</div>
-        </li>
-    </ul>
-</div>
             <div class="card"><div class="card-title"><span class="emoji">🕯️</span>Historical Candles</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/candles/NABIL?period=1y" target="_blank">${baseUrl}/api/candles/:symbol?period=1y</a></span><div class="description">Historical OHLC data (period: 1w,1m,3m,6m,1y,2y,3y,5y)</div></li>
@@ -1404,14 +1686,15 @@ app.get('/', (req, res) => {
             <div class="card"><div class="card-title"><span class="emoji">📉</span>NEPSE Index</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/latest" target="_blank">${baseUrl}/api/index/latest</a></span><div class="description">Latest NEPSE Index value</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/historical?limit=100" target="_blank">${baseUrl}/api/index/historical?limit=100</a></span><div class="description">Historical index data (2814 records)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/index/historical?limit=100" target="_blank">${baseUrl}/api/index/historical?limit=100</a></span><div class="description">Historical index data</div></li>
                 </ul>
             </div>
             <div class="card"><div class="card-title"><span class="emoji">📊</span>Charts & Health</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart" target="_blank">${baseUrl}/chart</a></span><div class="description">Interactive candlestick chart for any symbol</div></li>
-                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart/NABIL?period=1y" target="_blank">${baseUrl}/chart/:symbol?period=1y</a></span><div class="description">Universal chart - change symbol in URL (e.g., NABIL)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/chart/NABIL?period=1y" target="_blank">${baseUrl}/chart/:symbol?period=1y</a></span><div class="description">Universal chart - change symbol in URL</div></li>
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/health" target="_blank">${baseUrl}/health</a></span><div class="description">API health check</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/market/is-open" target="_blank">${baseUrl}/api/market/is-open</a></span><div class="description">Check if market is open</div></li>
                 </ul>
             </div>
         </div>
@@ -1423,473 +1706,6 @@ app.get('/', (req, res) => {
     </div>
 </body>
 </html>`);
-});
-
-
-
-
-// ============ COMPANY DETAIL SCRAPER ============
-const companyDetailScraper = require('./scrapers/company/companyDetailScraper');
-
-// Get complete company details
-app.get('/api/company/detail/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const forceFresh = req.query.fresh === 'true';
-    
-    const result = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
-    
-    if (result.success) {
-      res.json(result);
-    } else {
-      res.status(404).json({
-        success: false,
-        error: `Company "${symbol}" not found or data unavailable`,
-        symbol: symbol.toUpperCase()
-      });
-    }
-  } catch (error) {
-    console.error(`Error fetching company detail for ${req.params.symbol}:`, error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      symbol: req.params.symbol.toUpperCase()
-    });
-  }
-});
-
-// Get company details with market data combined
-app.get('/api/company/full/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const forceFresh = req.query.fresh === 'true';
-    
-    // Get company details
-    const detailResult = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
-    
-    // Get live market data
-    const livePrice = await livePriceScraper.getStockPrice(symbol);
-    
-    const response = {
-      success: true,
-      symbol: symbol.toUpperCase(),
-      company: detailResult.success ? detailResult.company_details : null,
-      live_data: livePrice || null,
-      financials: detailResult.success ? detailResult.financials : null,
-      announcements: detailResult.success ? detailResult.announcements : null,
-      news: detailResult.success ? detailResult.news : null,
-      shareholders: detailResult.success ? detailResult.major_shareholders : null,
-      dividend_history: detailResult.success ? detailResult.dividend_history : null,
-      timestamp: new Date().toISOString()
-    };
-    
-    res.json(response);
-  } catch (error) {
-    console.error(`Error fetching full company data for ${req.params.symbol}:`, error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      symbol: req.params.symbol.toUpperCase()
-    });
-  }
-});
-
-// Clear company cache
-app.post('/api/company/cache/clear', async (req, res) => {
-  try {
-    const { symbol } = req.body;
-    companyDetailScraper.clearCache(symbol);
-    res.json({
-      success: true,
-      message: symbol ? `Cache cleared for ${symbol}` : 'All company cache cleared',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error clearing company cache:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// Add to index.js
-
-// Get just the company overview (summary)
-app.get('/api/company/overview/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const forceFresh = req.query.fresh === 'true';
-    
-    const result = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
-    
-    if (result.success) {
-      // Return only essential data
-      const overview = {
-        symbol: result.symbol,
-        name: result.company_details.name,
-        sector: result.company_details.sector,
-        market_price: result.price_data.market_price,
-        change_percent: result.price_data.percent_change,
-        shares_outstanding: result.company_details.shares_outstanding,
-        market_cap: result.financial_metrics.market_capitalization,
-        eps: result.financial_metrics.eps,
-        pe_ratio: result.financial_metrics.pe_ratio,
-        book_value: result.financial_metrics.book_value,
-        pbv: result.financial_metrics.pbv,
-        dividend_percent: result.dividend_data.percent_dividend,
-        bonus_percent: result.dividend_data.percent_bonus,
-        week_52_high: result.price_data.week_52_high,
-        week_52_low: result.price_data.week_52_low
-      };
-      
-      res.json({
-        success: true,
-        data: overview,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      res.status(404).json(result);
-    }
-  } catch (error) {
-    console.error(`Error fetching overview for ${req.params.symbol}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// ============ MARKET STATUS DEBUG ENDPOINTS ============
-// Detailed market status debug
-app.get('/api/market/status/debug', (req, res) => {
-  try {
-    const status = livePriceScraper.getMarketStatus();
-    res.json({
-      success: true,
-      data: status,
-      server_time: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error getting market status:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// Debug endpoint to see raw page structure
-app.get('/api/company/debug/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    
-    const response = await axios.get('https://merolagani.com/CompanyDetail.aspx', {
-      params: { symbol: symbol.toUpperCase() },
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-      }
-    });
-
-    const $ = cheerio.load(response.data);
-    
-    // Extract all text content for debugging
-    const bodyText = $('body').text();
-    
-    // Find all patterns with labels
-    const patterns = [];
-    const regex = /([A-Za-z\s]+?)\s+([\d,]+\.?\d*%?)/g;
-    let match;
-    while ((match = regex.exec(bodyText)) !== null) {
-      patterns.push({
-        label: match[1].trim(),
-        value: match[2].trim()
-      });
-    }
-
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      html_length: response.data.length,
-      body_text_length: bodyText.length,
-      sample_text: bodyText.substring(0, 2000),
-      patterns: patterns.slice(0, 50),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Debug error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// Simple market open check
-app.get('/api/market/is-open', (req, res) => {
-  try {
-    const isOpen = livePriceScraper.isMarketOpen();
-    const status = livePriceScraper.getMarketStatus();
-    res.json({
-      success: true,
-      market_open: isOpen,
-      details: status,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error checking market status:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Force refresh market data with status
-app.get('/api/market/force-refresh', async (req, res) => {
-  try {
-    const prices = await livePriceScraper.getCurrentPrices(true);
-    const isOpen = livePriceScraper.isMarketOpen();
-    const status = livePriceScraper.getMarketStatus();
-    
-    res.json({
-      success: true,
-      market_open: isOpen,
-      status: status,
-      prices_count: prices.length,
-      sample_price: prices.length > 0 ? prices[0] : null,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error forcing refresh:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// ============ FLOOR SHEET ENDPOINTS ============
-const floorSheetScraper = require('./scrapers/market/floorSheetScraper');
-
-// Get floor sheet for today or a specific date
-app.get('/api/floorsheet', async (req, res) => {
-  try {
-    const { date } = req.query;
-    const result = await floorSheetScraper.fetchFloorSheet(date);
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get trades for a specific stock symbol
-app.get('/api/floorsheet/symbol/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { date } = req.query;
-    const trades = await floorSheetScraper.getTradesBySymbol(symbol, date);
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      date: date || 'today',
-      count: trades.length,
-      data: trades,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get top traded symbols by turnover
-app.get('/api/floorsheet/top', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const { date } = req.query;
-    const topSymbols = await floorSheetScraper.getTopTradedSymbols(limit, date);
-    res.json({
-      success: true,
-      date: date || 'today',
-      count: topSymbols.length,
-      data: topSymbols,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get market activity summary
-app.get('/api/floorsheet/activity', async (req, res) => {
-  try {
-    const { date } = req.query;
-    const activity = await floorSheetScraper.getMarketActivity(date);
-    res.json({
-      success: true,
-      data: activity,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get floor sheet for a date range
-app.get('/api/floorsheet/range', async (req, res) => {
-  try {
-    const { from, to, limit = 20 } = req.query;
-    if (!from || !to) {
-      return res.status(400).json({ error: 'Both "from" and "to" dates are required (YYYY-MM-DD)' });
-    }
-    const result = await floorSheetScraper.fetchFloorSheetRange(from, to, parseInt(limit));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
-// ============ BONUS SHARE ENDPOINTS ============
-const bonusScraper = require('./scrapers/events/bonusScraper');
-
-app.get('/api/bonus/all', async (req, res) => {
-  try {
-    const { fiscalYear } = req.query;
-    const result = await bonusScraper.fetchBonusShares(fiscalYear);
-    res.json({ success: result.success, count: result.count, data: result.data, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/company/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const limit = parseInt(req.query.limit) || 10;
-    const bonuses = await bonusScraper.getBonusByCompany(symbol, limit);
-    res.json({ success: true, symbol: symbol.toUpperCase(), count: bonuses.length, data: bonuses, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/upcoming', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 20;
-    const upcoming = await bonusScraper.getUpcomingBonus(limit);
-    res.json({ success: true, count: upcoming.length, data: upcoming, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/history/:fiscalYear', async (req, res) => {
-  try {
-    const { fiscalYear } = req.params;
-    const history = await bonusScraper.getBonusHistory(fiscalYear);
-    res.json({ success: true, fiscal_year: fiscalYear, count: history.length, data: history, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/stats/:fiscalYear', async (req, res) => {
-  try {
-    const { fiscalYear } = req.params;
-    const stats = await bonusScraper.getTotalBonusShares(fiscalYear);
-    const history = await bonusScraper.getBonusHistory(fiscalYear);
-    res.json({ success: true, fiscal_year: fiscalYear, statistics: stats, top_bonus: history.slice(0, 10), timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/bonus/impact/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { price } = req.query;
-    if (!price) return res.status(400).json({ error: 'Price parameter required' });
-    const impact = await bonusScraper.calculateBonusImpact(symbol, parseFloat(price));
-    if (!impact) return res.status(404).json({ error: 'No bonus data found for symbol' });
-    res.json({ success: true, data: impact, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ DIVIDEND ENDPOINTS ============
-const dividendScraper = require('./scrapers/events/dividendScraper');
-
-app.get('/api/dividends/all', async (req, res) => {
-  try {
-    const { fiscalYear } = req.query;
-    const result = await dividendScraper.fetchDividends(fiscalYear);
-    res.json({ success: result.success, count: result.count, data: result.data, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/latest', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 20;
-    const dividends = await dividendScraper.getLatestDividends(limit);
-    res.json({ success: true, count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/company/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const limit = parseInt(req.query.limit) || 10;
-    const dividends = await dividendScraper.getDividendsByCompany(symbol, limit);
-    res.json({ success: true, symbol: symbol.toUpperCase(), count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/fiscal/:year', async (req, res) => {
-  try {
-    const { year } = req.params;
-    const dividends = await dividendScraper.getDividendsByFiscalYear(year);
-    res.json({ success: true, fiscal_year: year, count: dividends.length, data: dividends, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/dividends/yield/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { price } = req.query;
-    const result = await dividendScraper.calculateDividendYield(symbol, price ? parseFloat(price) : null);
-    if (!result) return res.status(404).json({ error: 'No dividend data found for symbol' });
-    res.json({ success: true, data: result, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ IPO ENDPOINTS ============
-const ipoScraper = require('./scrapers/events/ipoScraper');
-
-app.get('/api/ipo/all', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.fetchIPOData();
-    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/ipo/upcoming', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.getUpcomingIPOs();
-    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/ipo/active', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.getActiveIPOs();
-    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/ipo/recent', async (req, res) => {
-  try {
-    const ipos = await ipoScraper.getRecentIPOs();
-    res.json({ success: true, count: ipos.length, data: ipos, timestamp: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
 });
 
 // ============ ERROR HANDLING ============
@@ -1910,6 +1726,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`📅 Events: http://localhost:${PORT}/api/events`);
   console.log(`📉 Chart: http://localhost:${PORT}/chart`);
   console.log(`🔴 Live Price: http://localhost:${PORT}/api/live/price/NABIL`);
+  console.log(`🏢 Company Detail: http://localhost:${PORT}/api/company/detail/SOPL`);
   console.log(`📊 Universal Chart: http://localhost:${PORT}/chart/SOPL?period=1m`);
   console.log(`💚 Health: http://localhost:${PORT}/health`);
 });

@@ -9,17 +9,6 @@ class AnnouncementScraper {
     this.cacheTTL = 300000; // 5 minutes
   }
 
-  /**
-   * Fetch announcements with optional filters
-   * @param {Object} filters - Filter options
-   * @param {string} filters.symbol - Company symbol
-   * @param {string} filters.sector - Sector name
-   * @param {string} filters.fiscalYear - Fiscal year (e.g., '082-083')
-   * @param {string} filters.announcementType - Type (AGM, Bonus, Dividend, etc.)
-   * @param {number} filters.limit - Number of announcements to return
-   * @param {boolean} forceFresh - Bypass cache
-   * @returns {Object} Announcements data
-   */
   async fetchAnnouncements(filters = {}, forceFresh = false) {
     try {
       const cacheKey = `announcements_${JSON.stringify(filters)}`;
@@ -52,7 +41,6 @@ class AnnouncementScraper {
       const $ = cheerio.load(response.data);
       const announcements = this.parseAnnouncements($);
       
-      // Apply limit
       const limit = filters.limit || 100;
       const limitedAnnouncements = announcements.slice(0, limit);
 
@@ -82,41 +70,40 @@ class AnnouncementScraper {
     }
   }
 
-  /**
-   * Parse announcements from HTML
-   */
   parseAnnouncements($) {
     const announcements = [];
 
-    // Find announcement items - they appear as list items with date and description
-    $('.announcement-item, .announcement-list li, .event-item, .news-item').each((i, element) => {
+    // Look for announcement items in the page
+    // The page shows announcements in a list format
+    $('.announcement-item, .announcement-list li, .event-item, .news-item, .list-group-item').each((i, element) => {
       const text = $(element).text().trim();
-      if (!text) return;
+      if (!text || text.length < 20) return;
 
-      // Try to extract date and description
-      // Pattern: "Date - Description" or "Date Description"
-      const dateMatch = text.match(/^([A-Za-z]+\s+\d{1,2},\s+\d{4})/);
+      // Try to extract date - looks for "Month DD, YYYY" pattern
+      const dateMatch = text.match(/([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})/);
       if (!dateMatch) return;
 
-      const dateStr = dateMatch[1];
+      const dateStr = `${dateMatch[1]} ${dateMatch[2]}, ${dateMatch[3]}`;
       const description = text.replace(dateStr, '').replace(/^[\s-]+/, '').trim();
 
-      // Try to extract company symbol/name from description
-      const companyMatch = description.match(/([A-Z\s]+?)(?:\s*[-–]\s*|\s*\(|$)/);
+      // Try to extract company symbol from description
+      const symbolMatch = description.match(/\(([A-Z]+)\)/);
+      const symbol = symbolMatch ? symbolMatch[1] : null;
+
+      // Try to extract company name
+      const companyMatch = description.match(/^([A-Za-z\s]+?)(?:\s*[-–]\s*|\s*\(|$)/);
       const company = companyMatch ? companyMatch[1].trim() : '';
 
-      // Try to extract announcement type
+      // Detect announcement type
       const type = this.detectAnnouncementType(description);
 
       announcements.push({
         date: dateStr,
         date_iso: this.parseDate(dateStr),
         company: company,
+        symbol: symbol,
         description: description,
         type: type,
-        // Try to extract symbol from description
-        symbol: this.extractSymbol(description),
-        // Try to extract numeric values (dividend %, bonus %, etc.)
         values: this.extractValues(description)
       });
     });
@@ -124,9 +111,6 @@ class AnnouncementScraper {
     return announcements;
   }
 
-  /**
-   * Detect announcement type from description
-   */
   detectAnnouncementType(description) {
     const text = description.toLowerCase();
     if (text.includes('agm')) return 'AGM';
@@ -147,29 +131,6 @@ class AnnouncementScraper {
     return 'General';
   }
 
-  /**
-   * Extract symbol from description
-   */
-  extractSymbol(description) {
-    // Look for pattern like (SYMBOL) or "SYMBOL -"
-    const symbolMatch = description.match(/\(([A-Z]+)\)/);
-    if (symbolMatch) return symbolMatch[1];
-
-    const dashMatch = description.match(/([A-Z]+)\s*[-–]/);
-    if (dashMatch) return dashMatch[1];
-
-    // Look for "Company Name (SYMBOL)" pattern
-    const companySymbolMatch = description.match(/([A-Z]+)\s*(?:-|–|:|$)/);
-    if (companySymbolMatch && companySymbolMatch[1].length >= 3) {
-      return companySymbolMatch[1];
-    }
-
-    return null;
-  }
-
-  /**
-   * Extract numeric values from description
-   */
   extractValues(description) {
     const values = {};
 
@@ -188,11 +149,10 @@ class AnnouncementScraper {
     // Extract unit values
     const unitMatches = description.match(/([\d,]+)\s*units/g);
     if (unitMatches) {
-      const units = unitMatches.map(m => parseInt(m.replace(/,/g, '').replace(' units', '')));
-      values.units = units;
+      values.units = unitMatches.map(m => parseInt(m.replace(/,/g, '').replace(' units', '')));
     }
 
-    // Extract price values (Rs. X)
+    // Extract price values
     const priceMatch = description.match(/Rs\.\s*([\d,]+)/);
     if (priceMatch) {
       values.price = parseFloat(priceMatch[1].replace(/,/g, ''));
@@ -201,9 +161,6 @@ class AnnouncementScraper {
     return values;
   }
 
-  /**
-   * Parse date string to ISO format
-   */
   parseDate(dateStr) {
     try {
       const date = new Date(dateStr);
@@ -213,66 +170,6 @@ class AnnouncementScraper {
     }
   }
 
-  /**
-   * Get available filter options
-   */
-  async getFilterOptions() {
-    try {
-      const response = await axios.get(this.baseUrl, {
-        timeout: 10000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-
-      const $ = cheerio.load(response.data);
-      
-      const options = {
-        sectors: [],
-        fiscalYears: [],
-        announcementTypes: []
-      };
-
-      // Extract sector options
-      $('#sectorSelect option, select[name="sector"] option').each((i, el) => {
-        const value = $(el).val();
-        if (value && value !== 'All') {
-          options.sectors.push(value);
-        }
-      });
-
-      // Extract fiscal year options
-      $('#fiscalYearSelect option, select[name="fiscalYear"] option').each((i, el) => {
-        const value = $(el).val();
-        if (value && value !== 'All') {
-          options.fiscalYears.push(value);
-        }
-      });
-
-      // Extract announcement type options
-      $('#typeSelect option, select[name="type"] option').each((i, el) => {
-        const value = $(el).val();
-        if (value && value !== 'All') {
-          options.announcementTypes.push(value);
-        }
-      });
-
-      return {
-        success: true,
-        data: options,
-        timestamp: new Date().toISOString()
-      };
-
-    } catch (error) {
-      console.error('Error fetching filter options:', error.message);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  /**
-   * Clear cache
-   */
   clearCache() {
     this.cache.clear();
   }

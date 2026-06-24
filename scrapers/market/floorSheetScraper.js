@@ -4,382 +4,295 @@ const cheerio = require('cheerio');
 
 class FloorSheetScraper {
   constructor() {
-    this.baseUrl = 'https://merolagani.com';
+    this.baseUrl = 'https://merolagani.com/Floorsheet.aspx';
     this.cache = new Map();
-    this.cacheTTL = 60000; // 1 minute - floor sheets update frequently
+    this.cacheTTL = 60000; // 1 minute for floor sheet data
   }
 
   /**
-   * Fetches the floor sheet for a given date.
-   * @param {string} date - Date in 'YYYY-MM-DD' format. If null, fetches today's.
-   * @returns {Promise<Object>} - { success, date, count, data, timestamp }
+   * Fetch floor sheet for a specific date
+   * @param {string} date - Date in YYYY-MM-DD format (optional, defaults to today)
+   * @param {boolean} forceFresh - Bypass cache
+   * @returns {Object} Floor sheet data
    */
-  async fetchFloorSheet(date = null) {
+  async fetchFloorSheet(date = null, forceFresh = false) {
     try {
-      const targetDate = date || this.getTodayDate();
-      const cacheKey = `floorsheet_${targetDate}`;
-
-      const cached = this.cache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
-        return cached.data;
+      // If no date provided, use today
+      if (!date) {
+        const now = new Date();
+        date = now.toISOString().split('T')[0];
       }
 
-      console.log(`Fetching floor sheet for date: ${targetDate}`);
-      const url = `${this.baseUrl}/Floorsheet.aspx?date=${targetDate}`;
+      const cacheKey = `floorsheet_${date}`;
       
+      if (!forceFresh && this.cache.has(cacheKey)) {
+        const cached = this.cache.get(cacheKey);
+        if (Date.now() - cached.timestamp < this.cacheTTL) {
+          return cached.data;
+        }
+      }
+
+      // Build URL with date parameter
+      const url = `${this.baseUrl}?date=${date}`;
+
       const response = await axios.get(url, {
         timeout: 15000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
         }
       });
 
-      // Check if the response contains data or an error message
-      if (response.data.includes('No data found') || response.data.includes('No Record Found')) {
-        return {
-          success: true,
-          date: targetDate,
-          count: 0,
-          data: [],
-          message: 'No trading data found for this date.',
-          timestamp: new Date().toISOString()
-        };
-      }
-
-      const parsedData = this.parseFloorSheet(response.data);
+      const $ = cheerio.load(response.data);
+      const trades = this.parseFloorSheet($);
       
+      // Calculate market activity
+      const activity = this.calculateActivity(trades);
+
       const result = {
         success: true,
-        date: targetDate,
-        count: parsedData.length,
-        data: parsedData,
+        date: date,
+        total_trades: trades.length,
+        total_volume: activity.total_volume,
+        total_turnover: activity.total_turnover,
+        unique_symbols: activity.unique_symbols,
+        data: trades,
+        activity: activity,
         timestamp: new Date().toISOString()
       };
 
-      this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
+      this.cache.set(cacheKey, {
+        data: result,
+        timestamp: Date.now()
+      });
+
       return result;
 
     } catch (error) {
       console.error(`Error fetching floor sheet for ${date}:`, error.message);
-      return { 
-        success: false, 
-        count: 0, 
-        data: [], 
+      return {
+        success: false,
         error: error.message,
-        date: date || this.getTodayDate()
+        date: date
       };
     }
   }
 
   /**
-   * Parses the HTML of the floor sheet page.
-   * Uses multiple strategies to find the data table.
+   * Parse floor sheet HTML
    */
-  parseFloorSheet(html) {
-    const $ = cheerio.load(html);
+  parseFloorSheet($) {
     const trades = [];
 
-    // --- Strategy 1: Find the main data table by its ID or class ---
-    let dataTable = null;
-    
-    // Common table identifiers on Merolagani
-    const tableSelectors = [
-      '#ctl00_ContentPlaceHolder1_gvFloorSheet', // Common ASP.NET ID
-      '.grid-view', 
-      '.table-bordered',
-      'table[cellpadding="4"]',
-      'table[border="1"]'
-    ];
-
-    for (const selector of tableSelectors) {
-      const table = $(selector);
-      if (table.length > 0 && table.find('tr').length > 1) {
-        dataTable = table;
-        break;
-      }
-    }
-
-    // --- Strategy 2: If not found, find any table with typical floor sheet headers ---
-    if (!dataTable) {
-      const allTables = $('table');
-      allTables.each((i, table) => {
-        const headerRow = $(table).find('tr').first();
-        const headerText = headerRow.text().toLowerCase();
-        // Look for keywords in the header
-        if (headerText.includes('contract') || 
-            headerText.includes('buyer') || 
-            headerText.includes('seller') ||
-            headerText.includes('symbol') ||
-            headerText.includes('rate')) {
-          dataTable = $(table);
-          return false; // break the loop
-        }
-      });
-    }
-
-    // --- Strategy 3: Look for tabular data in divs or structured lists (fallback) ---
-    if (!dataTable) {
-      console.warn('Could not find a standard table. Attempting to parse list-like structure...');
-      // This is a very basic fallback for non-table structures
-      const rows = $('div.trade-row, div.row-item, li.trade-item');
-      if (rows.length > 0) {
-        rows.each((i, row) => {
-          const cols = $(row).find('span, div.col');
-          if (cols.length >= 4) {
-            trades.push({
-              contract_no: $(cols[0]).text().trim(),
-              stock_symbol: $(cols[1]).text().trim(),
-              buyer_broker: $(cols[2]).text().trim(),
-              seller_broker: $(cols[3]).text().trim(),
-              quantity: this.parseNumeric($(cols[4]).text()),
-              rate: this.parseNumeric($(cols[5]).text()),
-              amount: this.parseNumeric($(cols[6]).text()),
-              time: $(cols[7]).text().trim()
-            });
+    // Look for the floor sheet table
+    // The page typically has a table with columns: Contract No., Stock Symbol, Buyer, Seller, Quantity, Rate, Amount
+    $('table').each((i, table) => {
+      const tableText = $(table).text();
+      
+      // Check if this is the floor sheet table
+      if (tableText.includes('Contract No.') || 
+          tableText.includes('Stock Symbol') || 
+          tableText.includes('Buyer') || 
+          tableText.includes('Seller')) {
+        
+        $(table).find('tr').each((j, row) => {
+          if (j === 0) return; // Skip header row
+          
+          const cols = $(row).find('td');
+          if (cols.length >= 6) {
+            const contractNo = $(cols[0]).text().trim();
+            const symbol = $(cols[1]).text().trim().toUpperCase();
+            const buyer = $(cols[2]).text().trim();
+            const seller = $(cols[3]).text().trim();
+            const quantity = this.parseNumber($(cols[4]).text());
+            const rate = this.parseNumber($(cols[5]).text());
+            const amount = cols.length > 6 ? this.parseNumber($(cols[6]).text()) : quantity * rate;
+            
+            if (symbol && quantity > 0 && rate > 0) {
+              trades.push({
+                contract_no: contractNo,
+                symbol: symbol,
+                buyer: buyer,
+                seller: seller,
+                quantity: quantity,
+                rate: rate,
+                amount: amount || quantity * rate,
+                time: this.extractTime($(row).text())
+              });
+            }
           }
         });
-        return trades; // Return early if we parsed something
-      }
-      
-      console.warn('No data structure could be parsed.');
-      return trades;
-    }
-
-    // --- Parse the found table ---
-    const headerRow = dataTable.find('tr').first();
-    const headers = [];
-    headerRow.find('th, td').each((i, el) => {
-      headers.push($(el).text().trim().toLowerCase());
-    });
-
-    // Map column indices based on header text
-    const colMap = {
-      sn: this.findColumnIndex(headers, ['s.n.', 'sn', 'sno', '#']),
-      contract: this.findColumnIndex(headers, ['contract', 'contract no', 'contract no.', 'ticket no']),
-      symbol: this.findColumnIndex(headers, ['symbol', 'scrip', 'company', 'stock']),
-      buyer: this.findColumnIndex(headers, ['buyer', 'buyer broker', 'b.broker', 'b/']),
-      seller: this.findColumnIndex(headers, ['seller', 'seller broker', 's.broker', 's/']),
-      quantity: this.findColumnIndex(headers, ['quantity', 'qty', 'shares']),
-      rate: this.findColumnIndex(headers, ['rate', 'price', 'rate(rs.)']),
-      amount: this.findColumnIndex(headers, ['amount', 'total', 'turnover']),
-      time: this.findColumnIndex(headers, ['time', 'transaction time'])
-    };
-
-    // If we couldn't identify the columns, use a default mapping based on common order
-    if (Object.values(colMap).every(idx => idx === -1)) {
-      console.warn('Headers not recognized. Using default column mapping.');
-      // Assume order: SN, Contract, Symbol, Buyer, Seller, Qty, Rate, Amount, Time
-      const defaultMap = { sn:0, contract:1, symbol:2, buyer:3, seller:4, quantity:5, rate:6, amount:7, time:8 };
-      return this.parseTableRows(dataTable, defaultMap, $);
-    }
-
-    return this.parseTableRows(dataTable, colMap, $);
-  }
-
-  /**
-   * Helper to find the index of a column based on possible header names.
-   */
-  findColumnIndex(headers, possibleNames) {
-    for (let i = 0; i < headers.length; i++) {
-      const header = headers[i].trim();
-      if (possibleNames.some(name => header.includes(name))) {
-        return i;
-      }
-    }
-    return -1; // Not found
-  }
-
-  /**
-   * Parses the rows of a table using a column map.
-   */
-  parseTableRows(table, colMap, $) {
-    const rows = [];
-    table.find('tr').each((i, row) => {
-      if (i === 0) return; // Skip header row
-      
-      const cols = $(row).find('td');
-      if (cols.length < 3) return; // Skip rows that are too short
-
-      const trade = {
-        sn: i,
-        contract_no: $(cols[colMap.contract] || cols[1]).text().trim(),
-        stock_symbol: $(cols[colMap.symbol] || cols[2]).text().trim().toUpperCase(),
-        buyer_broker: $(cols[colMap.buyer] || cols[3]).text().trim(),
-        seller_broker: $(cols[colMap.seller] || cols[4]).text().trim(),
-        quantity: this.parseNumeric($(cols[colMap.quantity] || cols[5]).text()),
-        rate: this.parseNumeric($(cols[colMap.rate] || cols[6]).text()),
-        amount: this.parseNumeric($(cols[colMap.amount] || cols[7]).text()),
-        time: $(cols[colMap.time] || cols[8]).text().trim()
-      };
-
-      // Only add if we have at least a symbol and quantity
-      if (trade.stock_symbol && trade.quantity > 0) {
-        rows.push(trade);
       }
     });
-    return rows;
+
+    return trades;
   }
 
   /**
-   * Gets trades for a specific stock symbol on a given date.
+   * Extract time from row text if available
    */
-  async getTradesBySymbol(symbol, date = null) {
-    const result = await this.fetchFloorSheet(date);
-    if (!result.success) return [];
-    return result.data.filter(trade => 
-      trade.stock_symbol.toUpperCase() === symbol.toUpperCase()
-    );
+  extractTime(text) {
+    const timeMatch = text.match(/(\d{1,2}:\d{2}:\d{2})/);
+    return timeMatch ? timeMatch[1] : null;
   }
 
   /**
-   * Gets the top traded symbols by volume/amount for a date.
+   * Calculate market activity from trades
    */
-  async getTopTradedSymbols(limit = 10, date = null) {
-    const result = await this.fetchFloorSheet(date);
-    if (!result.success) return [];
-
+  calculateActivity(trades) {
     const symbolMap = new Map();
-    result.data.forEach(trade => {
-      if (symbolMap.has(trade.stock_symbol)) {
-        const existing = symbolMap.get(trade.stock_symbol);
-        existing.quantity += trade.quantity;
-        existing.amount += trade.amount;
-        existing.trades += 1;
-        existing.last_price = trade.rate;
-      } else {
-        symbolMap.set(trade.stock_symbol, {
-          symbol: trade.stock_symbol,
-          quantity: trade.quantity,
-          amount: trade.amount,
-          trades: 1,
-          last_price: trade.rate,
-          avg_rate: trade.rate
+    let totalVolume = 0;
+    let totalTurnover = 0;
+
+    for (const trade of trades) {
+      totalVolume += trade.quantity;
+      totalTurnover += trade.amount;
+      
+      if (!symbolMap.has(trade.symbol)) {
+        symbolMap.set(trade.symbol, {
+          symbol: trade.symbol,
+          volume: 0,
+          turnover: 0,
+          trades: 0,
+          last_price: trade.rate
         });
       }
-    });
+      
+      const symbolData = symbolMap.get(trade.symbol);
+      symbolData.volume += trade.quantity;
+      symbolData.turnover += trade.amount;
+      symbolData.trades += 1;
+      symbolData.last_price = trade.rate;
+    }
 
-    // Calculate average rate for each symbol
-    const aggregated = Array.from(symbolMap.values()).map(item => ({
-      ...item,
-      avg_rate: item.amount / item.quantity
-    }));
-
-    // Sort by amount (turnover)
-    aggregated.sort((a, b) => b.amount - a.amount);
-    return aggregated.slice(0, limit);
+    return {
+      total_volume: totalVolume,
+      total_turnover: totalTurnover,
+      unique_symbols: symbolMap.size,
+      symbol_summary: Array.from(symbolMap.values())
+        .sort((a, b) => b.turnover - a.turnover)
+    };
   }
 
   /**
-   * Gets an overall market activity summary for a date.
+   * Get trades for a specific symbol on a date
+   */
+  async getTradesBySymbol(symbol, date = null) {
+    try {
+      const result = await this.fetchFloorSheet(date);
+      if (!result.success) return [];
+      
+      const symbolTrades = result.data.filter(
+        trade => trade.symbol === symbol.toUpperCase()
+      );
+      
+      return symbolTrades;
+    } catch (error) {
+      console.error(`Error fetching trades for ${symbol}:`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get top traded symbols by turnover
+   */
+  async getTopTradedSymbols(limit = 10, date = null) {
+    try {
+      const result = await this.fetchFloorSheet(date);
+      if (!result.success) return [];
+      
+      return result.activity.symbol_summary.slice(0, limit);
+    } catch (error) {
+      console.error('Error fetching top traded symbols:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get market activity summary
    */
   async getMarketActivity(date = null) {
-    const result = await this.fetchFloorSheet(date);
-    if (!result.success || result.data.length === 0) {
+    try {
+      const result = await this.fetchFloorSheet(date);
+      if (!result.success) return null;
+      
       return {
-        date: date || this.getTodayDate(),
-        total_trades: 0,
-        total_quantity: 0,
-        total_amount: 0,
-        unique_symbols: 0,
-        average_rate: 0,
-        message: 'No data available'
+        date: result.date,
+        total_trades: result.total_trades,
+        total_volume: result.total_volume,
+        total_turnover: result.total_turnover,
+        unique_symbols: result.unique_symbols,
+        top_symbols: result.activity.symbol_summary.slice(0, 10),
+        timestamp: result.timestamp
       };
+    } catch (error) {
+      console.error('Error fetching market activity:', error.message);
+      return null;
     }
-
-    const totalTrades = result.data.length;
-    const totalQuantity = result.data.reduce((sum, t) => sum + t.quantity, 0);
-    const totalAmount = result.data.reduce((sum, t) => sum + t.amount, 0);
-    const uniqueSymbols = new Set(result.data.map(t => t.stock_symbol));
-
-    return {
-      date: result.date,
-      total_trades: totalTrades,
-      total_quantity: totalQuantity,
-      total_amount: totalAmount,
-      unique_symbols: uniqueSymbols.size,
-      average_rate: totalQuantity > 0 ? (totalAmount / totalQuantity) : 0
-    };
   }
 
   /**
-   * Fetches floor sheets for a date range (basic implementation).
+   * Fetch floor sheet for a date range
    */
-  async fetchFloorSheetRange(fromDate, toDate, limit = 10) {
-    const results = [];
-    let currentDate = new Date(fromDate);
-    const endDate = new Date(toDate);
-    
-    // Limit to prevent excessive requests
-    let daysProcessed = 0;
-    const maxDays = 30;
-
-    while (currentDate <= endDate && daysProcessed < maxDays && results.length < limit) {
-      const dateStr = this.formatDate(currentDate);
-      const result = await this.fetchFloorSheet(dateStr);
+  async fetchFloorSheetRange(fromDate, toDate, limit = 20) {
+    try {
+      const results = [];
+      const currentDate = new Date(fromDate);
+      const endDate = new Date(toDate);
       
-      if (result.success && result.data.length > 0) {
-        // Add date context to each trade
-        result.data.forEach(trade => trade.trade_date = dateStr);
-        results.push(...result.data);
+      while (currentDate <= endDate && results.length < limit) {
+        const dateStr = currentDate.toISOString().split('T')[0];
+        const result = await this.fetchFloorSheet(dateStr);
+        
+        if (result.success && result.total_trades > 0) {
+          results.push({
+            date: dateStr,
+            total_trades: result.total_trades,
+            total_volume: result.total_volume,
+            total_turnover: result.total_turnover,
+            unique_symbols: result.unique_symbols
+          });
+        }
+        
+        currentDate.setDate(currentDate.getDate() + 1);
       }
       
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
-      daysProcessed++;
+      return {
+        success: true,
+        from: fromDate,
+        to: toDate,
+        count: results.length,
+        data: results,
+        timestamp: new Date().toISOString()
+      };
       
-      // Add delay to be respectful
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (error) {
+      console.error('Error fetching floor sheet range:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
     }
-
-    return {
-      success: true,
-      from_date: fromDate,
-      to_date: toDate,
-      total_processed_days: daysProcessed,
-      count: results.length,
-      data: results.slice(0, limit),
-      timestamp: new Date().toISOString()
-    };
   }
 
   /**
-   * Helper to get today's date in 'YYYY-MM-DD' format.
+   * Parse number from text
    */
-  getTodayDate() {
-    return this.formatDate(new Date());
-  }
-
-  /**
-   * Helper to format a date object to 'YYYY-MM-DD'.
-   */
-  formatDate(date) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-
-  /**
-   * Safe numeric parser.
-   */
-  parseNumeric(value) {
-    if (!value) return 0;
-    // Remove commas, spaces, and other non-numeric characters (except decimal point)
-    const cleaned = String(value).replace(/[^0-9.]/g, '');
+  parseNumber(text) {
+    if (!text) return 0;
+    if (typeof text === 'number') return isNaN(text) ? 0 : text;
+    
+    const cleaned = String(text).replace(/,/g, '').replace(/\s/g, '').replace(/[^0-9.-]/g, '');
     const parsed = parseFloat(cleaned);
     return isNaN(parsed) ? 0 : parsed;
   }
 
   /**
-   * Clears the cache.
+   * Clear cache
    */
   clearCache() {
     this.cache.clear();
-    console.log('Floor sheet cache cleared');
   }
 }
 

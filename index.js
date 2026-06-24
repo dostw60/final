@@ -1,4 +1,4 @@
-// index.js - COMPLETE PRODUCTION READY VERSION WITH UNIVERSAL CHART & COMPANY DETAILS
+// index.js - COMPLETE PRODUCTION READY VERSION WITH UNIVERSAL CHART & COMPANY DETAILS & ANNOUNCEMENTS & FLOOR SHEET
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -523,6 +523,429 @@ class CompanyDetailScraper {
 
 const companyDetailScraper = new CompanyDetailScraper();
 
+// ============ ANNOUNCEMENT SCRAPER ============
+class AnnouncementScraper {
+  constructor() {
+    this.baseUrl = 'https://merolagani.com/AnnouncementList.aspx';
+    this.cache = new Map();
+    this.cacheTTL = 300000; // 5 minutes
+  }
+
+  async fetchAnnouncements(filters = {}, forceFresh = false) {
+    try {
+      const cacheKey = `announcements_${JSON.stringify(filters)}`;
+      
+      if (!forceFresh && this.cache.has(cacheKey)) {
+        const cached = this.cache.get(cacheKey);
+        if (Date.now() - cached.timestamp < this.cacheTTL) {
+          return cached.data;
+        }
+      }
+
+      const params = new URLSearchParams();
+      if (filters.symbol) params.append('symbol', filters.symbol.toUpperCase());
+      if (filters.sector) params.append('sector', filters.sector);
+      if (filters.fiscalYear) params.append('fiscalYear', filters.fiscalYear);
+      if (filters.announcementType) params.append('type', filters.announcementType);
+
+      const url = params.toString() ? `${this.baseUrl}?${params.toString()}` : this.baseUrl;
+
+      const response = await axios.get(url, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
+
+      const $ = cheerio.load(response.data);
+      const announcements = this.parseAnnouncements($);
+      
+      const limit = filters.limit || 100;
+      const limitedAnnouncements = announcements.slice(0, limit);
+
+      const result = {
+        success: true,
+        count: limitedAnnouncements.length,
+        total_available: announcements.length,
+        filters: filters,
+        data: limitedAnnouncements,
+        timestamp: new Date().toISOString()
+      };
+
+      this.cache.set(cacheKey, {
+        data: result,
+        timestamp: Date.now()
+      });
+
+      return result;
+
+    } catch (error) {
+      console.error('Error fetching announcements:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        filters: filters
+      };
+    }
+  }
+
+  parseAnnouncements($) {
+    const announcements = [];
+
+    $('.announcement-item, .announcement-list li, .event-item, .news-item, .list-group-item').each((i, element) => {
+      const text = $(element).text().trim();
+      if (!text || text.length < 20) return;
+
+      const dateMatch = text.match(/([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})/);
+      if (!dateMatch) return;
+
+      const dateStr = `${dateMatch[1]} ${dateMatch[2]}, ${dateMatch[3]}`;
+      const description = text.replace(dateStr, '').replace(/^[\s-]+/, '').trim();
+
+      const symbolMatch = description.match(/\(([A-Z]+)\)/);
+      const symbol = symbolMatch ? symbolMatch[1] : null;
+
+      const companyMatch = description.match(/^([A-Za-z\s]+?)(?:\s*[-–]\s*|\s*\(|$)/);
+      const company = companyMatch ? companyMatch[1].trim() : '';
+
+      const type = this.detectAnnouncementType(description);
+
+      announcements.push({
+        date: dateStr,
+        date_iso: this.parseDate(dateStr),
+        company: company,
+        symbol: symbol,
+        description: description,
+        type: type,
+        values: this.extractValues(description)
+      });
+    });
+
+    return announcements;
+  }
+
+  detectAnnouncementType(description) {
+    const text = description.toLowerCase();
+    if (text.includes('agm')) return 'AGM';
+    if (text.includes('bonus share') || text.includes('bonus')) return 'Bonus Share';
+    if (text.includes('dividend') || text.includes('cash dividend')) return 'Dividend';
+    if (text.includes('ipo')) return 'IPO';
+    if (text.includes('right share')) return 'Right Share';
+    if (text.includes('tender') || text.includes('auction')) return 'Tender/Auction';
+    if (text.includes('nav')) return 'NAV';
+    if (text.includes('book closure') || text.includes('bookclosure')) return 'Book Closure';
+    if (text.includes('sgm')) return 'SGM';
+    if (text.includes('quarterly report')) return 'Quarterly Report';
+    if (text.includes('annual report')) return 'Annual Report';
+    if (text.includes('financial statement')) return 'Financial Statement';
+    if (text.includes('promoter share')) return 'Promoter Share';
+    if (text.includes('minutes')) return 'Minutes';
+    if (text.includes('interest rate')) return 'Interest Rate';
+    return 'General';
+  }
+
+  extractValues(description) {
+    const values = {};
+
+    const percentMatches = description.match(/([\d.]+)%/g);
+    if (percentMatches) {
+      const numbers = percentMatches.map(m => parseFloat(m.replace('%', '')));
+      if (numbers.length >= 2) {
+        values.bonus_percent = numbers[0];
+        values.dividend_percent = numbers[1];
+      } else if (numbers.length === 1) {
+        values.percent = numbers[0];
+      }
+    }
+
+    const unitMatches = description.match(/([\d,]+)\s*units/g);
+    if (unitMatches) {
+      values.units = unitMatches.map(m => parseInt(m.replace(/,/g, '').replace(' units', '')));
+    }
+
+    const priceMatch = description.match(/Rs\.\s*([\d,]+)/);
+    if (priceMatch) {
+      values.price = parseFloat(priceMatch[1].replace(/,/g, ''));
+    }
+
+    return values;
+  }
+
+  parseDate(dateStr) {
+    try {
+      const date = new Date(dateStr);
+      return date.toISOString().split('T')[0];
+    } catch (e) {
+      return null;
+    }
+  }
+
+  clearCache() {
+    this.cache.clear();
+  }
+}
+
+const announcementScraper = new AnnouncementScraper();
+
+// ============ FLOOR SHEET SCRAPER ============
+class FloorSheetScraper {
+  constructor() {
+    this.baseUrl = 'https://merolagani.com/Floorsheet.aspx';
+    this.cache = new Map();
+    this.cacheTTL = 60000; // 1 minute for floor sheet data
+  }
+
+  async fetchFloorSheet(date = null, forceFresh = false) {
+    try {
+      if (!date) {
+        const now = new Date();
+        date = now.toISOString().split('T')[0];
+      }
+
+      const cacheKey = `floorsheet_${date}`;
+      
+      if (!forceFresh && this.cache.has(cacheKey)) {
+        const cached = this.cache.get(cacheKey);
+        if (Date.now() - cached.timestamp < this.cacheTTL) {
+          return cached.data;
+        }
+      }
+
+      const url = `${this.baseUrl}?date=${date}`;
+
+      const response = await axios.get(url, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
+
+      const $ = cheerio.load(response.data);
+      const trades = this.parseFloorSheet($);
+      const activity = this.calculateActivity(trades);
+
+      const result = {
+        success: true,
+        date: date,
+        total_trades: trades.length,
+        total_volume: activity.total_volume,
+        total_turnover: activity.total_turnover,
+        unique_symbols: activity.unique_symbols,
+        data: trades,
+        activity: activity,
+        timestamp: new Date().toISOString()
+      };
+
+      this.cache.set(cacheKey, {
+        data: result,
+        timestamp: Date.now()
+      });
+
+      return result;
+
+    } catch (error) {
+      console.error(`Error fetching floor sheet for ${date}:`, error.message);
+      return {
+        success: false,
+        error: error.message,
+        date: date
+      };
+    }
+  }
+
+  parseFloorSheet($) {
+    const trades = [];
+
+    $('table').each((i, table) => {
+      const tableText = $(table).text();
+      
+      if (tableText.includes('Contract No.') || 
+          tableText.includes('Stock Symbol') || 
+          tableText.includes('Buyer') || 
+          tableText.includes('Seller')) {
+        
+        $(table).find('tr').each((j, row) => {
+          if (j === 0) return;
+          
+          const cols = $(row).find('td');
+          if (cols.length >= 6) {
+            const contractNo = $(cols[0]).text().trim();
+            const symbol = $(cols[1]).text().trim().toUpperCase();
+            const buyer = $(cols[2]).text().trim();
+            const seller = $(cols[3]).text().trim();
+            const quantity = this.parseNumber($(cols[4]).text());
+            const rate = this.parseNumber($(cols[5]).text());
+            const amount = cols.length > 6 ? this.parseNumber($(cols[6]).text()) : quantity * rate;
+            
+            if (symbol && quantity > 0 && rate > 0) {
+              trades.push({
+                contract_no: contractNo,
+                symbol: symbol,
+                buyer: buyer,
+                seller: seller,
+                quantity: quantity,
+                rate: rate,
+                amount: amount || quantity * rate,
+                time: this.extractTime($(row).text())
+              });
+            }
+          }
+        });
+      }
+    });
+
+    return trades;
+  }
+
+  extractTime(text) {
+    const timeMatch = text.match(/(\d{1,2}:\d{2}:\d{2})/);
+    return timeMatch ? timeMatch[1] : null;
+  }
+
+  calculateActivity(trades) {
+    const symbolMap = new Map();
+    let totalVolume = 0;
+    let totalTurnover = 0;
+
+    for (const trade of trades) {
+      totalVolume += trade.quantity;
+      totalTurnover += trade.amount;
+      
+      if (!symbolMap.has(trade.symbol)) {
+        symbolMap.set(trade.symbol, {
+          symbol: trade.symbol,
+          volume: 0,
+          turnover: 0,
+          trades: 0,
+          last_price: trade.rate
+        });
+      }
+      
+      const symbolData = symbolMap.get(trade.symbol);
+      symbolData.volume += trade.quantity;
+      symbolData.turnover += trade.amount;
+      symbolData.trades += 1;
+      symbolData.last_price = trade.rate;
+    }
+
+    return {
+      total_volume: totalVolume,
+      total_turnover: totalTurnover,
+      unique_symbols: symbolMap.size,
+      symbol_summary: Array.from(symbolMap.values())
+        .sort((a, b) => b.turnover - a.turnover)
+    };
+  }
+
+  async getTradesBySymbol(symbol, date = null) {
+    try {
+      const result = await this.fetchFloorSheet(date);
+      if (!result.success) return [];
+      
+      const symbolTrades = result.data.filter(
+        trade => trade.symbol === symbol.toUpperCase()
+      );
+      
+      return symbolTrades;
+    } catch (error) {
+      console.error(`Error fetching trades for ${symbol}:`, error.message);
+      return [];
+    }
+  }
+
+  async getTopTradedSymbols(limit = 10, date = null) {
+    try {
+      const result = await this.fetchFloorSheet(date);
+      if (!result.success) return [];
+      
+      return result.activity.symbol_summary.slice(0, limit);
+    } catch (error) {
+      console.error('Error fetching top traded symbols:', error.message);
+      return [];
+    }
+  }
+
+  async getMarketActivity(date = null) {
+    try {
+      const result = await this.fetchFloorSheet(date);
+      if (!result.success) return null;
+      
+      return {
+        date: result.date,
+        total_trades: result.total_trades,
+        total_volume: result.total_volume,
+        total_turnover: result.total_turnover,
+        unique_symbols: result.unique_symbols,
+        top_symbols: result.activity.symbol_summary.slice(0, 10),
+        timestamp: result.timestamp
+      };
+    } catch (error) {
+      console.error('Error fetching market activity:', error.message);
+      return null;
+    }
+  }
+
+  async fetchFloorSheetRange(fromDate, toDate, limit = 20) {
+    try {
+      const results = [];
+      const currentDate = new Date(fromDate);
+      const endDate = new Date(toDate);
+      
+      while (currentDate <= endDate && results.length < limit) {
+        const dateStr = currentDate.toISOString().split('T')[0];
+        const result = await this.fetchFloorSheet(dateStr);
+        
+        if (result.success && result.total_trades > 0) {
+          results.push({
+            date: dateStr,
+            total_trades: result.total_trades,
+            total_volume: result.total_volume,
+            total_turnover: result.total_turnover,
+            unique_symbols: result.unique_symbols
+          });
+        }
+        
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      
+      return {
+        success: true,
+        from: fromDate,
+        to: toDate,
+        count: results.length,
+        data: results,
+        timestamp: new Date().toISOString()
+      };
+      
+    } catch (error) {
+      console.error('Error fetching floor sheet range:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  parseNumber(text) {
+    if (!text) return 0;
+    if (typeof text === 'number') return isNaN(text) ? 0 : text;
+    
+    const cleaned = String(text).replace(/,/g, '').replace(/\s/g, '').replace(/[^0-9.-]/g, '');
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  clearCache() {
+    this.cache.clear();
+  }
+}
+
+const floorSheetScraper = new FloorSheetScraper();
+
 // ============ MARKET SUMMARY ENDPOINTS ============
 app.get('/api/market/summary', async (req, res) => {
   try {
@@ -814,7 +1237,6 @@ app.post('/api/companies/batch', async (req, res) => {
 
 // ============ COMPANY DETAIL SCRAPER ENDPOINTS ============
 
-// Get complete company details
 app.get('/api/company/detail/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -841,7 +1263,6 @@ app.get('/api/company/detail/:symbol', async (req, res) => {
   }
 });
 
-// Get company details with live market data combined
 app.get('/api/company/full/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -875,7 +1296,6 @@ app.get('/api/company/full/:symbol', async (req, res) => {
   }
 });
 
-// Get company overview (summary)
 app.get('/api/company/overview/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -917,7 +1337,6 @@ app.get('/api/company/overview/:symbol', async (req, res) => {
   }
 });
 
-// Clear company cache
 app.post('/api/company/cache/clear', async (req, res) => {
   try {
     const { symbol } = req.body;
@@ -933,7 +1352,6 @@ app.post('/api/company/cache/clear', async (req, res) => {
   }
 });
 
-// Debug endpoint to see raw page structure
 app.get('/api/company/debug/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -971,6 +1389,240 @@ app.get('/api/company/debug/:symbol', async (req, res) => {
     });
   } catch (error) {
     console.error('Debug error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ ANNOUNCEMENT ENDPOINTS ============
+
+app.get('/api/announcements', async (req, res) => {
+  try {
+    const { symbol, sector, fiscalYear, type, limit, fresh } = req.query;
+    
+    const filters = {
+      symbol: symbol,
+      sector: sector,
+      fiscalYear: fiscalYear,
+      announcementType: type,
+      limit: limit ? parseInt(limit) : 100
+    };
+    
+    const forceFresh = fresh === 'true';
+    const result = await announcementScraper.fetchAnnouncements(filters, forceFresh);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching announcements:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/announcements/latest', async (req, res) => {
+  try {
+    const { limit = 20, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    console.error('Error fetching latest announcements:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/announcements/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { limit = 50, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      symbol: symbol,
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      ...result
+    });
+  } catch (error) {
+    console.error(`Error fetching announcements for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/announcements/type/:type', async (req, res) => {
+  try {
+    const { type } = req.params;
+    const { limit = 50, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      announcementType: type,
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      type: type,
+      ...result
+    });
+  } catch (error) {
+    console.error(`Error fetching ${req.params.type} announcements:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/announcements/sector/:sector', async (req, res) => {
+  try {
+    const { sector } = req.params;
+    const { limit = 50, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      sector: sector,
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      sector: sector,
+      ...result
+    });
+  } catch (error) {
+    console.error(`Error fetching announcements for sector ${req.params.sector}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/announcements/fiscal/:year', async (req, res) => {
+  try {
+    const { year } = req.params;
+    const { limit = 50, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      fiscalYear: year,
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      fiscal_year: year,
+      ...result
+    });
+  } catch (error) {
+    console.error(`Error fetching announcements for fiscal year ${req.params.year}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/announcements/cache/clear', async (req, res) => {
+  try {
+    announcementScraper.clearCache();
+    res.json({
+      success: true,
+      message: 'Announcement cache cleared',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error clearing announcement cache:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ FLOOR SHEET ENDPOINTS ============
+
+app.get('/api/floorsheet', async (req, res) => {
+  try {
+    const { date, fresh } = req.query;
+    const forceFresh = fresh === 'true';
+    const result = await floorSheetScraper.fetchFloorSheet(date, forceFresh);
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching floor sheet:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/floorsheet/symbol/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { date } = req.query;
+    const trades = await floorSheetScraper.getTradesBySymbol(symbol, date);
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      date: date || 'today',
+      count: trades.length,
+      data: trades,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching trades by symbol:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/floorsheet/top', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    const { date } = req.query;
+    const topSymbols = await floorSheetScraper.getTopTradedSymbols(limit, date);
+    res.json({
+      success: true,
+      date: date || 'today',
+      count: topSymbols.length,
+      data: topSymbols,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching top traded symbols:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/floorsheet/activity', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const activity = await floorSheetScraper.getMarketActivity(date);
+    res.json({
+      success: true,
+      data: activity,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching market activity:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/floorsheet/range', async (req, res) => {
+  try {
+    const { from, to, limit = 20 } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ error: 'Both "from" and "to" dates are required (YYYY-MM-DD)' });
+    }
+    const result = await floorSheetScraper.fetchFloorSheetRange(from, to, parseInt(limit));
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching floor sheet range:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/floorsheet/cache/clear', async (req, res) => {
+  try {
+    floorSheetScraper.clearCache();
+    res.json({
+      success: true,
+      message: 'Floor sheet cache cleared',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error clearing floor sheet cache:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1298,120 +1950,7 @@ app.post('/api/candles/bulk', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-// ============ ANNOUNCEMENT SCRAPER ============
-const announcementScraper = require('./scrapers/announcements/announcementScraper');
 
-// Get announcements with filters
-app.get('/api/announcements', async (req, res) => {
-  try {
-    const { symbol, sector, fiscalYear, type, limit, fresh } = req.query;
-    
-    const filters = {
-      symbol: symbol,
-      sector: sector,
-      fiscalYear: fiscalYear,
-      announcementType: type,
-      limit: limit ? parseInt(limit) : 100
-    };
-    
-    const forceFresh = fresh === 'true';
-    const result = await announcementScraper.fetchAnnouncements(filters, forceFresh);
-    
-    res.json(result);
-  } catch (error) {
-    console.error('Error fetching announcements:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get filter options
-app.get('/api/announcements/filters', async (req, res) => {
-  try {
-    const result = await announcementScraper.getFilterOptions();
-    res.json(result);
-  } catch (error) {
-    console.error('Error fetching filter options:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get announcements for a specific company
-app.get('/api/announcements/company/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { limit = 50, fresh } = req.query;
-    
-    const result = await announcementScraper.fetchAnnouncements({
-      symbol: symbol,
-      limit: parseInt(limit)
-    }, fresh === 'true');
-    
-    res.json({
-      success: true,
-      symbol: symbol.toUpperCase(),
-      ...result
-    });
-  } catch (error) {
-    console.error(`Error fetching announcements for ${req.params.symbol}:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get announcements by type
-app.get('/api/announcements/type/:type', async (req, res) => {
-  try {
-    const { type } = req.params;
-    const { limit = 50, fresh } = req.query;
-    
-    const result = await announcementScraper.fetchAnnouncements({
-      announcementType: type,
-      limit: parseInt(limit)
-    }, fresh === 'true');
-    
-    res.json({
-      success: true,
-      type: type,
-      ...result
-    });
-  } catch (error) {
-    console.error(`Error fetching ${req.params.type} announcements:`, error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get latest announcements
-app.get('/api/announcements/latest', async (req, res) => {
-  try {
-    const { limit = 20, fresh } = req.query;
-    
-    const result = await announcementScraper.fetchAnnouncements({
-      limit: parseInt(limit)
-    }, fresh === 'true');
-    
-    res.json({
-      success: true,
-      ...result
-    });
-  } catch (error) {
-    console.error('Error fetching latest announcements:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Clear announcement cache
-app.post('/api/announcements/cache/clear', async (req, res) => {
-  try {
-    announcementScraper.clearCache();
-    res.json({
-      success: true,
-      message: 'Announcement cache cleared',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error clearing announcement cache:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
 // ============ NEPSE INDEX ENDPOINTS ============
 app.get('/api/index/historical', async (req, res) => {
   try {
@@ -1532,42 +2071,7 @@ app.get('/chart/:symbol?', (req, res) => {
             <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">Candles</div></div>
         </div>
     </div>
-// Add this card to the endpoints-grid section
-<div class="card">
-    <div class="card-title"><span class="emoji">📢</span>Announcements</div>
-    <ul class="endpoint-list">
-        <li>
-            <span class="method get">GET</span>
-            <span class="endpoint-url"><a href="${baseUrl}/api/announcements" target="_blank">${baseUrl}/api/announcements</a></span>
-            <div class="description">All announcements with filters (symbol, sector, fiscalYear, type)</div>
-        </li>
-        <li>
-            <span class="method get">GET</span>
-            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/latest?limit=10" target="_blank">${baseUrl}/api/announcements/latest</a></span>
-            <div class="description">Latest announcements</div>
-        </li>
-        <li>
-            <span class="method get">GET</span>
-            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/company/NABIL" target="_blank">${baseUrl}/api/announcements/company/:symbol</a></span>
-            <div class="description">Announcements by company</div>
-        </li>
-        <li>
-            <span class="method get">GET</span>
-            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/type/AGM" target="_blank">${baseUrl}/api/announcements/type/:type</a></span>
-            <div class="description">Announcements by type (AGM, Bonus, Dividend, IPO, etc.)</div>
-        </li>
-        <li>
-            <span class="method get">GET</span>
-            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/filters" target="_blank">${baseUrl}/api/announcements/filters</a></span>
-            <div class="description">Get available filter options</div>
-        </li>
-        <li>
-            <span class="method post">POST</span>
-            <span class="endpoint-url">${baseUrl}/api/announcements/cache/clear</span>
-            <div class="description">Clear announcement cache</div>
-        </li>
-    </ul>
-</div>
+
     <script>
         let chart = null;
         let series = null;
@@ -1678,16 +2182,6 @@ app.get('/chart/:symbol?', (req, res) => {
 </body>
 </html>`);
 });
-
-
-
-
-
-
-
-
-
-
 
 // ============ MARKET STATUS ENDPOINTS ============
 app.get('/api/market/status/debug', (req, res) => {
@@ -1823,6 +2317,28 @@ app.get('/', (req, res) => {
                     <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/company/cache/clear</span><div class="description">Clear cached company data</div></li>
                 </ul>
             </div>
+            <div class="card"><div class="card-title"><span class="emoji">📢</span>Announcements</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/announcements" target="_blank">${baseUrl}/api/announcements</a></span><div class="description">All announcements with filters (symbol, sector, fiscalYear, type)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/announcements/latest?limit=10" target="_blank">${baseUrl}/api/announcements/latest</a></span><div class="description">Latest announcements</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/announcements/company/NABIL" target="_blank">${baseUrl}/api/announcements/company/:symbol</a></span><div class="description">Announcements by company</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/announcements/type/AGM" target="_blank">${baseUrl}/api/announcements/type/:type</a></span><div class="description">Announcements by type (AGM, Bonus, Dividend, IPO, etc.)</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/announcements/sector/Commercial%20Banks" target="_blank">${baseUrl}/api/announcements/sector/:sector</a></span><div class="description">Announcements by sector</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/announcements/fiscal/082-083" target="_blank">${baseUrl}/api/announcements/fiscal/:year</a></span><div class="description">Announcements by fiscal year</div></li>
+                    <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/announcements/cache/clear</span><div class="description">Clear announcement cache</div></li>
+                </ul>
+            </div>
+            <div class="card"><div class="card-title"><span class="emoji">📋</span>Floor Sheet</div>
+                <ul class="endpoint-list">
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/floorsheet" target="_blank">${baseUrl}/api/floorsheet</a></span><div class="description">Get today's floor sheet data</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/floorsheet?date=2026-06-24" target="_blank">${baseUrl}/api/floorsheet?date=YYYY-MM-DD</a></span><div class="description">Get floor sheet for a specific date</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/floorsheet/symbol/NABIL" target="_blank">${baseUrl}/api/floorsheet/symbol/:symbol</a></span><div class="description">Get trades for a specific stock</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/floorsheet/top?limit=10" target="_blank">${baseUrl}/api/floorsheet/top?limit=10</a></span><div class="description">Top traded symbols by turnover</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/floorsheet/activity" target="_blank">${baseUrl}/api/floorsheet/activity</a></span><div class="description">Market activity summary</div></li>
+                    <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/floorsheet/range?from=2026-06-01&to=2026-06-24" target="_blank">${baseUrl}/api/floorsheet/range?from=YYYY-MM-DD&to=YYYY-MM-DD</a></span><div class="description">Floor sheet for date range</div></li>
+                    <li><span class="method post">POST</span><span class="endpoint-url">${baseUrl}/api/floorsheet/cache/clear</span><div class="description">Clear floor sheet cache</div></li>
+                </ul>
+            </div>
             <div class="card"><div class="card-title"><span class="emoji">📅</span>Corporate Events</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events" target="_blank">${baseUrl}/api/events</a></span><div class="description">All corporate events</div></li>
@@ -1882,6 +2398,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`📊 Market Summary: http://localhost:${PORT}/api/market/summary`);
   console.log(`📈 NEPSE Index: http://localhost:${PORT}/api/index/latest`);
   console.log(`📅 Events: http://localhost:${PORT}/api/events`);
+  console.log(`📢 Announcements: http://localhost:${PORT}/api/announcements`);
+  console.log(`📋 Floor Sheet: http://localhost:${PORT}/api/floorsheet`);
   console.log(`📉 Chart: http://localhost:${PORT}/chart`);
   console.log(`🔴 Live Price: http://localhost:${PORT}/api/live/price/NABIL`);
   console.log(`🏢 Company Detail: http://localhost:${PORT}/api/company/detail/SOPL`);

@@ -1374,6 +1374,27 @@ app.get('/', (req, res) => {
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/events/stats" target="_blank">${baseUrl}/api/events/stats</a></span><div class="description">Event statistics</div></li>
                 </ul>
             </div>
+            <!-- Add to endpoints-grid section -->
+<div class="card">
+    <div class="card-title"><span class="emoji">🏢</span>Company Details (Full)</div>
+    <ul class="endpoint-list">
+        <li>
+            <span class="method get">GET</span>
+            <span class="endpoint-url">/api/company/detail/:symbol</span>
+            <div class="description">Complete company details from CompanyDetail.aspx</div>
+        </li>
+        <li>
+            <span class="method get">GET</span>
+            <span class="endpoint-url">/api/company/full/:symbol</span>
+            <div class="description">Company details + live market data combined</div>
+        </li>
+        <li>
+            <span class="method post">POST</span>
+            <span class="endpoint-url">/api/company/cache/clear</span>
+            <div class="description">Clear cached company data</div>
+        </li>
+    </ul>
+</div>
             <div class="card"><div class="card-title"><span class="emoji">🕯️</span>Historical Candles</div>
                 <ul class="endpoint-list">
                     <li><span class="method get">GET</span><span class="endpoint-url"><a href="${baseUrl}/api/candles/NABIL?period=1y" target="_blank">${baseUrl}/api/candles/:symbol?period=1y</a></span><div class="description">Historical OHLC data (period: 1w,1m,3m,6m,1y,2y,3y,5y)</div></li>
@@ -1407,7 +1428,87 @@ app.get('/', (req, res) => {
 
 
 
+// ============ COMPANY DETAIL SCRAPER ============
+const companyDetailScraper = require('./scrapers/company/companyDetailScraper');
 
+// Get complete company details
+app.get('/api/company/detail/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const forceFresh = req.query.fresh === 'true';
+    
+    const result = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
+    
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(404).json({
+        success: false,
+        error: `Company "${symbol}" not found or data unavailable`,
+        symbol: symbol.toUpperCase()
+      });
+    }
+  } catch (error) {
+    console.error(`Error fetching company detail for ${req.params.symbol}:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      symbol: req.params.symbol.toUpperCase()
+    });
+  }
+});
+
+// Get company details with market data combined
+app.get('/api/company/full/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const forceFresh = req.query.fresh === 'true';
+    
+    // Get company details
+    const detailResult = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
+    
+    // Get live market data
+    const livePrice = await livePriceScraper.getStockPrice(symbol);
+    
+    const response = {
+      success: true,
+      symbol: symbol.toUpperCase(),
+      company: detailResult.success ? detailResult.company_details : null,
+      live_data: livePrice || null,
+      financials: detailResult.success ? detailResult.financials : null,
+      announcements: detailResult.success ? detailResult.announcements : null,
+      news: detailResult.success ? detailResult.news : null,
+      shareholders: detailResult.success ? detailResult.major_shareholders : null,
+      dividend_history: detailResult.success ? detailResult.dividend_history : null,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json(response);
+  } catch (error) {
+    console.error(`Error fetching full company data for ${req.params.symbol}:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      symbol: req.params.symbol.toUpperCase()
+    });
+  }
+});
+
+// Clear company cache
+app.post('/api/company/cache/clear', async (req, res) => {
+  try {
+    const { symbol } = req.body;
+    companyDetailScraper.clearCache(symbol);
+    res.json({
+      success: true,
+      message: symbol ? `Cache cleared for ${symbol}` : 'All company cache cleared',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error clearing company cache:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ============ MARKET STATUS DEBUG ENDPOINTS ============
 // Detailed market status debug

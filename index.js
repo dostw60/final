@@ -1380,17 +1380,17 @@ app.get('/', (req, res) => {
     <ul class="endpoint-list">
         <li>
             <span class="method get">GET</span>
-            <span class="endpoint-url">/api/company/detail/:symbol</span>
+            <span class="endpoint-url">https://final-ocai.onrender.com/api/company/detail/:symbol</span>
             <div class="description">Complete company details from CompanyDetail.aspx</div>
         </li>
         <li>
             <span class="method get">GET</span>
-            <span class="endpoint-url">/api/company/full/:symbol</span>
+            <span class="endpoint-url">https://final-ocai.onrender.com/api/company/full/:symbol</span>
             <div class="description">Company details + live market data combined</div>
         </li>
         <li>
             <span class="method post">POST</span>
-            <span class="endpoint-url">/api/company/cache/clear</span>
+            <span class="endpoint-url">https://final-ocai.onrender.com/api/company/cache/clear</span>
             <div class="description">Clear cached company data</div>
         </li>
     </ul>

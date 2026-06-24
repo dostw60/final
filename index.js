@@ -1298,7 +1298,120 @@ app.post('/api/candles/bulk', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ============ ANNOUNCEMENT SCRAPER ============
+const announcementScraper = require('./scrapers/announcements/announcementScraper');
 
+// Get announcements with filters
+app.get('/api/announcements', async (req, res) => {
+  try {
+    const { symbol, sector, fiscalYear, type, limit, fresh } = req.query;
+    
+    const filters = {
+      symbol: symbol,
+      sector: sector,
+      fiscalYear: fiscalYear,
+      announcementType: type,
+      limit: limit ? parseInt(limit) : 100
+    };
+    
+    const forceFresh = fresh === 'true';
+    const result = await announcementScraper.fetchAnnouncements(filters, forceFresh);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching announcements:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get filter options
+app.get('/api/announcements/filters', async (req, res) => {
+  try {
+    const result = await announcementScraper.getFilterOptions();
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching filter options:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get announcements for a specific company
+app.get('/api/announcements/company/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { limit = 50, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      symbol: symbol,
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      ...result
+    });
+  } catch (error) {
+    console.error(`Error fetching announcements for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get announcements by type
+app.get('/api/announcements/type/:type', async (req, res) => {
+  try {
+    const { type } = req.params;
+    const { limit = 50, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      announcementType: type,
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      type: type,
+      ...result
+    });
+  } catch (error) {
+    console.error(`Error fetching ${req.params.type} announcements:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get latest announcements
+app.get('/api/announcements/latest', async (req, res) => {
+  try {
+    const { limit = 20, fresh } = req.query;
+    
+    const result = await announcementScraper.fetchAnnouncements({
+      limit: parseInt(limit)
+    }, fresh === 'true');
+    
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    console.error('Error fetching latest announcements:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear announcement cache
+app.post('/api/announcements/cache/clear', async (req, res) => {
+  try {
+    announcementScraper.clearCache();
+    res.json({
+      success: true,
+      message: 'Announcement cache cleared',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error clearing announcement cache:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ NEPSE INDEX ENDPOINTS ============
 app.get('/api/index/historical', async (req, res) => {
   try {
@@ -1419,7 +1532,42 @@ app.get('/chart/:symbol?', (req, res) => {
             <div class="stat-card"><div class="stat-value">--</div><div class="stat-label">Candles</div></div>
         </div>
     </div>
-
+// Add this card to the endpoints-grid section
+<div class="card">
+    <div class="card-title"><span class="emoji">📢</span>Announcements</div>
+    <ul class="endpoint-list">
+        <li>
+            <span class="method get">GET</span>
+            <span class="endpoint-url"><a href="${baseUrl}/api/announcements" target="_blank">${baseUrl}/api/announcements</a></span>
+            <div class="description">All announcements with filters (symbol, sector, fiscalYear, type)</div>
+        </li>
+        <li>
+            <span class="method get">GET</span>
+            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/latest?limit=10" target="_blank">${baseUrl}/api/announcements/latest</a></span>
+            <div class="description">Latest announcements</div>
+        </li>
+        <li>
+            <span class="method get">GET</span>
+            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/company/NABIL" target="_blank">${baseUrl}/api/announcements/company/:symbol</a></span>
+            <div class="description">Announcements by company</div>
+        </li>
+        <li>
+            <span class="method get">GET</span>
+            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/type/AGM" target="_blank">${baseUrl}/api/announcements/type/:type</a></span>
+            <div class="description">Announcements by type (AGM, Bonus, Dividend, IPO, etc.)</div>
+        </li>
+        <li>
+            <span class="method get">GET</span>
+            <span class="endpoint-url"><a href="${baseUrl}/api/announcements/filters" target="_blank">${baseUrl}/api/announcements/filters</a></span>
+            <div class="description">Get available filter options</div>
+        </li>
+        <li>
+            <span class="method post">POST</span>
+            <span class="endpoint-url">${baseUrl}/api/announcements/cache/clear</span>
+            <div class="description">Clear announcement cache</div>
+        </li>
+    </ul>
+</div>
     <script>
         let chart = null;
         let series = null;
@@ -1530,6 +1678,16 @@ app.get('/chart/:symbol?', (req, res) => {
 </body>
 </html>`);
 });
+
+
+
+
+
+
+
+
+
+
 
 // ============ MARKET STATUS ENDPOINTS ============
 app.get('/api/market/status/debug', (req, res) => {

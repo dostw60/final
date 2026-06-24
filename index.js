@@ -1567,7 +1567,50 @@ app.get('/api/market/status/debug', (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// Debug endpoint to see raw page structure
+app.get('/api/company/debug/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    
+    const response = await axios.get('https://merolagani.com/CompanyDetail.aspx', {
+      params: { symbol: symbol.toUpperCase() },
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
 
+    const $ = cheerio.load(response.data);
+    
+    // Extract all text content for debugging
+    const bodyText = $('body').text();
+    
+    // Find all patterns with labels
+    const patterns = [];
+    const regex = /([A-Za-z\s]+?)\s+([\d,]+\.?\d*%?)/g;
+    let match;
+    while ((match = regex.exec(bodyText)) !== null) {
+      patterns.push({
+        label: match[1].trim(),
+        value: match[2].trim()
+      });
+    }
+
+    res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      html_length: response.data.length,
+      body_text_length: bodyText.length,
+      sample_text: bodyText.substring(0, 2000),
+      patterns: patterns.slice(0, 50),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Debug error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // Simple market open check
 app.get('/api/market/is-open', (req, res) => {
   try {

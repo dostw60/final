@@ -1509,7 +1509,49 @@ app.post('/api/company/cache/clear', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// Add to index.js
 
+// Get just the company overview (summary)
+app.get('/api/company/overview/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const forceFresh = req.query.fresh === 'true';
+    
+    const result = await companyDetailScraper.fetchCompanyDetails(symbol, forceFresh);
+    
+    if (result.success) {
+      // Return only essential data
+      const overview = {
+        symbol: result.symbol,
+        name: result.company_details.name,
+        sector: result.company_details.sector,
+        market_price: result.price_data.market_price,
+        change_percent: result.price_data.percent_change,
+        shares_outstanding: result.company_details.shares_outstanding,
+        market_cap: result.financial_metrics.market_capitalization,
+        eps: result.financial_metrics.eps,
+        pe_ratio: result.financial_metrics.pe_ratio,
+        book_value: result.financial_metrics.book_value,
+        pbv: result.financial_metrics.pbv,
+        dividend_percent: result.dividend_data.percent_dividend,
+        bonus_percent: result.dividend_data.percent_bonus,
+        week_52_high: result.price_data.week_52_high,
+        week_52_low: result.price_data.week_52_low
+      };
+      
+      res.json({
+        success: true,
+        data: overview,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(404).json(result);
+    }
+  } catch (error) {
+    console.error(`Error fetching overview for ${req.params.symbol}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ MARKET STATUS DEBUG ENDPOINTS ============
 // Detailed market status debug
 app.get('/api/market/status/debug', (req, res) => {

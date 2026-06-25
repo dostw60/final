@@ -70,14 +70,14 @@ class FloorSheetScraper {
   }
 
   /**
-   * Parse floor sheet HTML - CORRECTED column mapping based on debug output
+   * Parse floor sheet HTML - CORRECTED column mapping
    * 
-   * Table structure:
+   * Table structure from debug:
    * Col 0: "#"
    * Col 1: "Transact. No." (contract number)
-   * Col 2: "Symbol" ← THIS IS THE STOCK SYMBOL
-   * Col 3: "Buyer"
-   * Col 4: "Seller"
+   * Col 2: "Symbol" ← STOCK SYMBOL (AHL, NABIL, etc.)
+   * Col 3: "Buyer" (broker code)
+   * Col 4: "Seller" (broker code)
    * Col 5: "Quantity"
    * Col 6: "Rate"
    * Col 7: "Amount"
@@ -85,47 +85,31 @@ class FloorSheetScraper {
   parseFloorSheetCorrectly($) {
     const trades = [];
 
-    // Find the floor sheet table
     $('table').each((i, table) => {
       const tableText = $(table).text();
       
-      // Check if this is the floor sheet table by looking for specific headers
       if (tableText.includes('Transact. No.') && 
           tableText.includes('Symbol') && 
           tableText.includes('Buyer') && 
           tableText.includes('Seller')) {
         
         $(table).find('tr').each((j, row) => {
-          // Skip header row
           if (j === 0) return;
           
           const cols = $(row).find('td');
           if (cols.length >= 8) {
-            // CORRECTED column mapping:
-            // 0: "#" (row number)
-            // 1: "Transact. No." - contract number
-            // 2: "Symbol" - THIS IS THE STOCK SYMBOL (AHL, NABIL, etc.)
-            // 3: "Buyer" - buyer broker code
-            // 4: "Seller" - seller broker code
-            // 5: "Quantity" - number of shares
-            // 6: "Rate" - price per share
-            // 7: "Amount" - total amount
-            
-            const rowNumber = $(cols[0]).text().trim();
             const contractNo = $(cols[1]).text().trim();
-            const symbol = $(cols[2]).text().trim().toUpperCase(); // ← FIXED: This is the stock symbol!
+            const symbol = $(cols[2]).text().trim().toUpperCase(); // FIXED: Column 2 is Symbol
             const buyer = $(cols[3]).text().trim();
             const seller = $(cols[4]).text().trim();
             const quantity = this.parseNumber($(cols[5]).text());
             const rate = this.parseNumber($(cols[6]).text());
             const amount = this.parseNumber($(cols[7]).text());
             
-            // Only add if symbol looks like a valid stock symbol (2-5 alphabetic characters)
-            if (symbol && quantity > 0 && rate > 0 && this.isValidSymbol(symbol)) {
+            if (symbol && quantity > 0 && rate > 0 && /^[A-Z]{2,6}$/.test(symbol)) {
               trades.push({
-                row_number: rowNumber,
                 contract_no: contractNo,
-                symbol: symbol,           // ← Now correctly gets "AHL", not the contract number
+                symbol: symbol,
                 buyer: buyer,
                 seller: seller,
                 quantity: quantity,
@@ -142,27 +126,11 @@ class FloorSheetScraper {
     return trades;
   }
 
-  /**
-   * Check if a symbol is a valid stock symbol
-   */
-  isValidSymbol(symbol) {
-    if (!symbol) return false;
-    // Stock symbols are typically alphabetic, 2-6 characters
-    // Examples: AHL, NABIL, SOPL, EBL, PRVU
-    return /^[A-Z]{2,6}$/.test(symbol);
-  }
-
-  /**
-   * Extract time from row text if available
-   */
   extractTime(text) {
     const timeMatch = text.match(/(\d{1,2}:\d{2}:\d{2})/);
     return timeMatch ? timeMatch[1] : null;
   }
 
-  /**
-   * Calculate market activity from trades
-   */
   calculateActivity(trades) {
     const symbolMap = new Map();
     let totalVolume = 0;
@@ -198,9 +166,6 @@ class FloorSheetScraper {
     };
   }
 
-  /**
-   * Get trades for a specific symbol on a date
-   */
   async getTradesBySymbol(symbol, date = null) {
     try {
       const result = await this.fetchFloorSheet(date);
@@ -217,9 +182,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Get top traded symbols by turnover
-   */
   async getTopTradedSymbols(limit = 10, date = null) {
     try {
       const result = await this.fetchFloorSheet(date);
@@ -232,9 +194,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Get market activity summary
-   */
   async getMarketActivity(date = null) {
     try {
       const result = await this.fetchFloorSheet(date);
@@ -255,9 +214,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Fetch floor sheet for a date range
-   */
   async fetchFloorSheetRange(fromDate, toDate, limit = 20) {
     try {
       const results = [];
@@ -299,9 +255,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Parse number from text
-   */
   parseNumber(text) {
     if (!text) return 0;
     if (typeof text === 'number') return isNaN(text) ? 0 : text;
@@ -311,9 +264,6 @@ class FloorSheetScraper {
     return isNaN(parsed) ? 0 : parsed;
   }
 
-  /**
-   * Clear cache
-   */
   clearCache() {
     this.cache.clear();
   }

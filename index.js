@@ -689,7 +689,7 @@ class AnnouncementScraper {
 
 const announcementScraper = new AnnouncementScraper();
 
-// ============ FLOOR SHEET SCRAPER ============
+// ============ FLOOR SHEET SCRAPER - CORRECTED VERSION ============
 class FloorSheetScraper {
   constructor() {
     this.baseUrl = 'https://merolagani.com/Floorsheet.aspx';
@@ -725,7 +725,7 @@ class FloorSheetScraper {
       });
 
       const $ = cheerio.load(response.data);
-      const trades = this.parseFloorSheet($);
+      const trades = this.parseFloorSheetCorrectly($);
       const activity = this.calculateActivity(trades);
 
       const result = {
@@ -757,32 +757,48 @@ class FloorSheetScraper {
     }
   }
 
-  parseFloorSheet($) {
+  /**
+   * Parse floor sheet HTML - CORRECTED column mapping
+   * 
+   * Table structure from debug:
+   * Col 0: "#"
+   * Col 1: "Transact. No." (contract number)
+   * Col 2: "Symbol" ← STOCK SYMBOL (AHL, NABIL, etc.)
+   * Col 3: "Buyer" (broker code)
+   * Col 4: "Seller" (broker code)
+   * Col 5: "Quantity"
+   * Col 6: "Rate"
+   * Col 7: "Amount"
+   */
+  parseFloorSheetCorrectly($) {
     const trades = [];
 
     $('table').each((i, table) => {
       const tableText = $(table).text();
       
-      if (tableText.includes('Contract No.') || 
-          tableText.includes('Stock Symbol') || 
-          tableText.includes('Buyer') || 
+      if (tableText.includes('Transact. No.') && 
+          tableText.includes('Symbol') && 
+          tableText.includes('Buyer') && 
           tableText.includes('Seller')) {
         
         $(table).find('tr').each((j, row) => {
           if (j === 0) return;
           
           const cols = $(row).find('td');
-          if (cols.length >= 6) {
-            const contractNo = $(cols[0]).text().trim();
-            const symbol = $(cols[1]).text().trim().toUpperCase();
-            const buyer = $(cols[2]).text().trim();
-            const seller = $(cols[3]).text().trim();
-            const quantity = this.parseNumber($(cols[4]).text());
-            const rate = this.parseNumber($(cols[5]).text());
-            const amount = cols.length > 6 ? this.parseNumber($(cols[6]).text()) : quantity * rate;
+          if (cols.length >= 8) {
+            const rowNumber = $(cols[0]).text().trim();
+            const contractNo = $(cols[1]).text().trim();
+            const symbol = $(cols[2]).text().trim().toUpperCase(); // ✅ FIXED: Column 2 is Symbol
+            const buyer = $(cols[3]).text().trim();
+            const seller = $(cols[4]).text().trim();
+            const quantity = this.parseNumber($(cols[5]).text());
+            const rate = this.parseNumber($(cols[6]).text());
+            const amount = this.parseNumber($(cols[7]).text());
             
-            if (symbol && quantity > 0 && rate > 0) {
+            // Only add if symbol is a valid stock symbol (2-6 alphabetic characters)
+            if (symbol && quantity > 0 && rate > 0 && /^[A-Z]{2,6}$/.test(symbol)) {
               trades.push({
+                row_number: rowNumber,
                 contract_no: contractNo,
                 symbol: symbol,
                 buyer: buyer,
@@ -2381,6 +2397,7 @@ app.get('/', (req, res) => {
 </body>
 </html>`);
 });
+
 // Debug: Check the raw floor sheet HTML structure
 app.get('/api/floorsheet/debug', async (req, res) => {
   try {
@@ -2398,7 +2415,6 @@ app.get('/api/floorsheet/debug', async (req, res) => {
     
     const $ = cheerio.load(response.data);
     
-    // Find all tables and log their structure
     const tables = [];
     $('table').each((i, table) => {
       const headers = $(table).find('th').map((_, th) => $(th).text().trim()).get();
@@ -2415,7 +2431,6 @@ app.get('/api/floorsheet/debug', async (req, res) => {
       });
     });
     
-    // Also extract all text from the page to see what's there
     const allText = $('body').text().substring(0, 2000);
     
     res.json({
@@ -2430,6 +2445,7 @@ app.get('/api/floorsheet/debug', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);

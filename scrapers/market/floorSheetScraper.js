@@ -1,4 +1,4 @@
-// scrapers/market/floorSheetScraper.js - FIXED VERSION
+// scrapers/market/floorSheetScraper.js - CORRECTED VERSION
 const axios = require('axios');
 const cheerio = require('cheerio');
 
@@ -6,7 +6,7 @@ class FloorSheetScraper {
   constructor() {
     this.baseUrl = 'https://merolagani.com/Floorsheet.aspx';
     this.cache = new Map();
-    this.cacheTTL = 60000; // 1 minute for floor sheet data
+    this.cacheTTL = 60000; // 1 minute
   }
 
   async fetchFloorSheet(date = null, forceFresh = false) {
@@ -70,143 +70,47 @@ class FloorSheetScraper {
   }
 
   /**
-   * Parse floor sheet HTML - FIXED to correctly identify symbols
+   * Parse floor sheet HTML - CORRECTED column indices
    */
   parseFloorSheet($) {
     const trades = [];
 
-    // Find all tables on the page
+    // Find the floor sheet table
     $('table').each((i, table) => {
-      // Get header text to identify the correct table
-      const headerText = $(table).find('tr:first-child th, tr:first-child td').text().trim();
+      const tableText = $(table).text();
       
-      // Look for the floor sheet table by checking for specific header text
-      const isFloorSheetTable = 
-        headerText.includes('Contract') || 
-        headerText.includes('Stock') || 
-        headerText.includes('Symbol') ||
-        headerText.includes('Buyer') ||
-        headerText.includes('Seller') ||
-        headerText.includes('Quantity') ||
-        headerText.includes('Rate');
-
-      if (!isFloorSheetTable) return;
-
-      // Get all rows in the table
-      const rows = $(table).find('tr');
-      
-      // Find the header row to determine column indices
-      let headerRow = null;
-      let headerColumns = [];
-      
-      rows.each((idx, row) => {
-        const cols = $(row).find('th, td');
-        const colText = cols.map((_, col) => $(col).text().trim()).get().join(' ');
+      // Check if this is the floor sheet table by looking for specific headers
+      if (tableText.includes('Transact. No.') && 
+          tableText.includes('Symbol') && 
+          tableText.includes('Buyer') && 
+          tableText.includes('Seller')) {
         
-        // If this row contains typical floor sheet headers
-        if (colText.includes('Contract') || 
-            colText.includes('Stock') || 
-            colText.includes('Symbol') || 
-            colText.includes('Buyer') || 
-            colText.includes('Seller')) {
-          headerRow = row;
-          headerColumns = $(row).find('th, td').map((_, col) => $(col).text().trim()).get();
-          return false; // Break the loop
-        }
-      });
-
-      // If we found a header row, use it to map columns
-      if (headerRow && headerColumns.length > 0) {
-        // Determine column indices based on headers
-        let symbolIndex = -1;
-        let contractIndex = -1;
-        let buyerIndex = -1;
-        let sellerIndex = -1;
-        let quantityIndex = -1;
-        let rateIndex = -1;
-        let amountIndex = -1;
-
-        headerColumns.forEach((header, index) => {
-          const h = header.toLowerCase();
-          if (h.includes('symbol') || h.includes('stock')) symbolIndex = index;
-          else if (h.includes('contract')) contractIndex = index;
-          else if (h.includes('buyer')) buyerIndex = index;
-          else if (h.includes('seller')) sellerIndex = index;
-          else if (h.includes('quantity')) quantityIndex = index;
-          else if (h.includes('rate') || h.includes('price')) rateIndex = index;
-          else if (h.includes('amount')) amountIndex = index;
-        });
-
-        // If we couldn't find the symbol column, try to guess
-        if (symbolIndex === -1) {
-          // Usually symbol is the second column (index 1)
-          symbolIndex = 1;
-        }
-
-        // Parse data rows
-        rows.each((idx, row) => {
+        $(table).find('tr').each((j, row) => {
           // Skip header row
-          if (row === headerRow) return;
+          if (j === 0) return;
           
           const cols = $(row).find('td');
-          if (cols.length < 4) return;
-
-          // Get the symbol using the determined index
-          let symbol = '';
-          if (symbolIndex >= 0 && symbolIndex < cols.length) {
-            symbol = $(cols[symbolIndex]).text().trim().toUpperCase();
-          }
-
-          // Skip if symbol is empty or looks like a contract number
-          if (!symbol || /^\d+$/.test(symbol)) return;
-
-          // Get other fields
-          const contractNo = contractIndex >= 0 && contractIndex < cols.length ? 
-            $(cols[contractIndex]).text().trim() : '';
-          const buyer = buyerIndex >= 0 && buyerIndex < cols.length ? 
-            $(cols[buyerIndex]).text().trim() : '';
-          const seller = sellerIndex >= 0 && sellerIndex < cols.length ? 
-            $(cols[sellerIndex]).text().trim() : '';
-          const quantity = quantityIndex >= 0 && quantityIndex < cols.length ? 
-            this.parseNumber($(cols[quantityIndex]).text()) : 0;
-          const rate = rateIndex >= 0 && rateIndex < cols.length ? 
-            this.parseNumber($(cols[rateIndex]).text()) : 0;
-          const amount = amountIndex >= 0 && amountIndex < cols.length ? 
-            this.parseNumber($(cols[amountIndex]).text()) : quantity * rate;
-
-          if (symbol && quantity > 0 && rate > 0) {
-            trades.push({
-              contract_no: contractNo,
-              symbol: symbol,
-              buyer: buyer,
-              seller: seller,
-              quantity: quantity,
-              rate: rate,
-              amount: amount || quantity * rate,
-              time: this.extractTime($(row).text())
-            });
-          }
-        });
-      } else {
-        // Fallback: Try to parse without header row (assume standard column order)
-        rows.each((idx, row) => {
-          if (idx === 0) return; // Skip first row (likely headers)
-          
-          const cols = $(row).find('td');
-          if (cols.length >= 6) {
-            const symbol = $(cols[1]).text().trim().toUpperCase();
+          if (cols.length >= 8) {
+            // Column indices based on debug output:
+            // 0: "#"
+            // 1: "Transact. No." (contract number)
+            // 2: "Symbol" ← THIS IS THE ONE WE WANT
+            // 3: "Buyer"
+            // 4: "Seller"
+            // 5: "Quantity"
+            // 6: "Rate"
+            // 7: "Amount"
             
-            // Skip if symbol looks like a contract number
-            if (!symbol || /^\d+$/.test(symbol)) return;
+            const contractNo = $(cols[1]).text().trim(); // Transact. No.
+            const symbol = $(cols[2]).text().trim().toUpperCase(); // Symbol - CORRECT INDEX!
+            const buyer = $(cols[3]).text().trim();
+            const seller = $(cols[4]).text().trim();
+            const quantity = this.parseNumber($(cols[5]).text());
+            const rate = this.parseNumber($(cols[6]).text());
+            const amount = this.parseNumber($(cols[7]).text());
             
-            const contractNo = $(cols[0]).text().trim();
-            const buyer = $(cols[2]).text().trim();
-            const seller = $(cols[3]).text().trim();
-            const quantity = this.parseNumber($(cols[4]).text());
-            const rate = this.parseNumber($(cols[5]).text());
-            const amount = cols.length > 6 ? this.parseNumber($(cols[6]).text()) : quantity * rate;
-            
-            if (symbol && quantity > 0 && rate > 0) {
+            // Only add if symbol looks like a valid stock symbol
+            if (symbol && quantity > 0 && rate > 0 && this.isValidSymbol(symbol)) {
               trades.push({
                 contract_no: contractNo,
                 symbol: symbol,
@@ -224,6 +128,16 @@ class FloorSheetScraper {
     });
 
     return trades;
+  }
+
+  /**
+   * Check if a symbol is a valid stock symbol
+   */
+  isValidSymbol(symbol) {
+    if (!symbol) return false;
+    // Stock symbols are typically alphabetic, 2-5 characters
+    // Examples: AHL, NABIL, SOPL, EBL
+    return /^[A-Z]{2,6}$/.test(symbol);
   }
 
   /**
@@ -272,9 +186,6 @@ class FloorSheetScraper {
     };
   }
 
-  /**
-   * Get trades for a specific symbol on a date
-   */
   async getTradesBySymbol(symbol, date = null) {
     try {
       const result = await this.fetchFloorSheet(date);
@@ -291,9 +202,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Get top traded symbols by turnover
-   */
   async getTopTradedSymbols(limit = 10, date = null) {
     try {
       const result = await this.fetchFloorSheet(date);
@@ -306,9 +214,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Get market activity summary
-   */
   async getMarketActivity(date = null) {
     try {
       const result = await this.fetchFloorSheet(date);
@@ -329,9 +234,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Fetch floor sheet for a date range
-   */
   async fetchFloorSheetRange(fromDate, toDate, limit = 20) {
     try {
       const results = [];
@@ -373,9 +275,6 @@ class FloorSheetScraper {
     }
   }
 
-  /**
-   * Parse number from text
-   */
   parseNumber(text) {
     if (!text) return 0;
     if (typeof text === 'number') return isNaN(text) ? 0 : text;
@@ -385,9 +284,6 @@ class FloorSheetScraper {
     return isNaN(parsed) ? 0 : parsed;
   }
 
-  /**
-   * Clear cache
-   */
   clearCache() {
     this.cache.clear();
   }

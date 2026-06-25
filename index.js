@@ -2381,7 +2381,55 @@ app.get('/', (req, res) => {
 </body>
 </html>`);
 });
-
+// Debug: Check the raw floor sheet HTML structure
+app.get('/api/floorsheet/debug', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const today = new Date().toISOString().split('T')[0];
+    const targetDate = date || today;
+    
+    const response = await axios.get(`https://merolagani.com/Floorsheet.aspx?date=${targetDate}`, {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+    
+    const $ = cheerio.load(response.data);
+    
+    // Find all tables and log their structure
+    const tables = [];
+    $('table').each((i, table) => {
+      const headers = $(table).find('th').map((_, th) => $(th).text().trim()).get();
+      const firstRow = $(table).find('tr').eq(1).find('td').map((_, td) => $(td).text().trim()).get();
+      const html = $(table).html().substring(0, 500);
+      
+      tables.push({
+        index: i,
+        header_count: headers.length,
+        headers: headers,
+        sample_row: firstRow,
+        has_headers: headers.length > 0,
+        html_sample: html
+      });
+    });
+    
+    // Also extract all text from the page to see what's there
+    const allText = $('body').text().substring(0, 2000);
+    
+    res.json({
+      success: true,
+      date: targetDate,
+      table_count: tables.length,
+      tables: tables,
+      sample_text: allText
+    });
+  } catch (error) {
+    console.error('Debug error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 // ============ ERROR HANDLING ============
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);

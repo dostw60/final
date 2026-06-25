@@ -1,10 +1,9 @@
-// scrapers/announcements/announcementScraper.js
+// scrapers/announcements/announcementScraper.js - UPDATED VERSION
 const axios = require('axios');
-const cheerio = require('cheerio');
 
 class AnnouncementScraper {
   constructor() {
-    this.baseUrl = 'https://merolagani.com/AnnouncementList.aspx';
+    this.eventsApiUrl = 'https://www.merolagani.com/handlers/webrequesthandler.ashx';
     this.cache = new Map();
     this.cacheTTL = 300000; // 5 minutes
   }
@@ -20,36 +19,68 @@ class AnnouncementScraper {
         }
       }
 
-      // Build query parameters
-      const params = new URLSearchParams();
-      if (filters.symbol) params.append('symbol', filters.symbol.toUpperCase());
-      if (filters.sector) params.append('sector', filters.sector);
-      if (filters.fiscalYear) params.append('fiscalYear', filters.fiscalYear);
-      if (filters.announcementType) params.append('type', filters.announcementType);
-
-      const url = params.toString() ? `${this.baseUrl}?${params.toString()}` : this.baseUrl;
-
-      const response = await axios.get(url, {
+      // Use the events API instead
+      const fromDate = filters.fromDate || '1/1/2025';
+      const toDate = filters.toDate || '12/31/2026';
+      
+      const response = await axios.get(this.eventsApiUrl, {
+        params: {
+          type: 'stock_event',
+          fromDate: fromDate,
+          toDate: toDate
+        },
         timeout: 15000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9'
+          'Accept': 'application/json'
         }
       });
 
-      const $ = cheerio.load(response.data);
-      const announcements = this.parseAnnouncements($);
+      let events = response.data.detail || [];
       
+      // Apply filters
+      if (filters.symbol) {
+        const symbolUpper = filters.symbol.toUpperCase();
+        events = events.filter(e => 
+          e.announcementDetail.toUpperCase().includes(symbolUpper)
+        );
+      }
+      
+      if (filters.announcementType) {
+        const typeLower = filters.announcementType.toLowerCase();
+        events = events.filter(e => 
+          e.announcementDetail.toLowerCase().includes(typeLower)
+        );
+      }
+      
+      if (filters.sector) {
+        const sectorLower = filters.sector.toLowerCase();
+        events = events.filter(e => 
+          e.announcementDetail.toLowerCase().includes(sectorLower)
+        );
+      }
+
+      // Format to match expected output
+      const formattedEvents = events.map(event => ({
+        date: event.actionDate || 'N/A',
+        date_iso: this.parseDate(event.actionDate),
+        company: this.extractCompanyName(event.announcementDetail),
+        symbol: this.extractSymbol(event.announcementDetail),
+        description: event.announcementDetail || '',
+        type: this.detectAnnouncementType(event.announcementDetail || ''),
+        values: this.extractValues(event.announcementDetail || '')
+      }));
+
       const limit = filters.limit || 100;
-      const limitedAnnouncements = announcements.slice(0, limit);
+      const limitedEvents = formattedEvents.slice(0, limit);
 
       const result = {
         success: true,
-        count: limitedAnnouncements.length,
-        total_available: announcements.length,
+        count: limitedEvents.length,
+        total_available: formattedEvents.length,
         filters: filters,
-        data: limitedAnnouncements,
+        data: limitedEvents,
+        source: 'stock_events_api',
         timestamp: new Date().toISOString()
       };
 
@@ -70,72 +101,45 @@ class AnnouncementScraper {
     }
   }
 
-  parseAnnouncements($) {
-    const announcements = [];
-
-    // Look for announcement items in the page
-    // The page shows announcements in a list format
-    $('.announcement-item, .announcement-list li, .event-item, .news-item, .list-group-item').each((i, element) => {
-      const text = $(element).text().trim();
-      if (!text || text.length < 20) return;
-
-      // Try to extract date - looks for "Month DD, YYYY" pattern
-      const dateMatch = text.match(/([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})/);
-      if (!dateMatch) return;
-
-      const dateStr = `${dateMatch[1]} ${dateMatch[2]}, ${dateMatch[3]}`;
-      const description = text.replace(dateStr, '').replace(/^[\s-]+/, '').trim();
-
-      // Try to extract company symbol from description
-      const symbolMatch = description.match(/\(([A-Z]+)\)/);
-      const symbol = symbolMatch ? symbolMatch[1] : null;
-
-      // Try to extract company name
-      const companyMatch = description.match(/^([A-Za-z\s]+?)(?:\s*[-–]\s*|\s*\(|$)/);
-      const company = companyMatch ? companyMatch[1].trim() : '';
-
-      // Detect announcement type
-      const type = this.detectAnnouncementType(description);
-
-      announcements.push({
-        date: dateStr,
-        date_iso: this.parseDate(dateStr),
-        company: company,
-        symbol: symbol,
-        description: description,
-        type: type,
-        values: this.extractValues(description)
-      });
-    });
-
-    return announcements;
+  extractCompanyName(text) {
+    if (!text) return '';
+    // Try to extract company name from the announcement
+    const match = text.match(/^([A-Za-z\s]+?)(?:\s*[-–]\s*|\s*\(|$)/);
+    return match ? match[1].trim() : '';
   }
 
-  detectAnnouncementType(description) {
-    const text = description.toLowerCase();
-    if (text.includes('agm')) return 'AGM';
-    if (text.includes('bonus share') || text.includes('bonus')) return 'Bonus Share';
-    if (text.includes('dividend') || text.includes('cash dividend')) return 'Dividend';
-    if (text.includes('ipo')) return 'IPO';
-    if (text.includes('right share')) return 'Right Share';
-    if (text.includes('tender') || text.includes('auction')) return 'Tender/Auction';
-    if (text.includes('nav')) return 'NAV';
-    if (text.includes('book closure') || text.includes('bookclosure')) return 'Book Closure';
-    if (text.includes('sgm')) return 'SGM';
-    if (text.includes('quarterly report')) return 'Quarterly Report';
-    if (text.includes('annual report')) return 'Annual Report';
-    if (text.includes('financial statement')) return 'Financial Statement';
-    if (text.includes('promoter share')) return 'Promoter Share';
-    if (text.includes('minutes')) return 'Minutes';
-    if (text.includes('interest rate')) return 'Interest Rate';
+  extractSymbol(text) {
+    if (!text) return null;
+    const match = text.match(/\(([A-Z]+)\)/);
+    return match ? match[1] : null;
+  }
+
+  detectAnnouncementType(text) {
+    if (!text) return 'General';
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes('agm')) return 'AGM';
+    if (lowerText.includes('bonus share') || lowerText.includes('bonus')) return 'Bonus Share';
+    if (lowerText.includes('dividend') || lowerText.includes('cash dividend')) return 'Dividend';
+    if (lowerText.includes('ipo')) return 'IPO';
+    if (lowerText.includes('right share')) return 'Right Share';
+    if (lowerText.includes('tender') || lowerText.includes('auction')) return 'Tender/Auction';
+    if (lowerText.includes('nav')) return 'NAV';
+    if (lowerText.includes('book closure') || lowerText.includes('bookclosure')) return 'Book Closure';
+    if (lowerText.includes('sgm')) return 'SGM';
+    if (lowerText.includes('quarterly report')) return 'Quarterly Report';
+    if (lowerText.includes('annual report')) return 'Annual Report';
+    if (lowerText.includes('financial statement')) return 'Financial Statement';
+    if (lowerText.includes('promoter share')) return 'Promoter Share';
+    if (lowerText.includes('minutes')) return 'Minutes';
+    if (lowerText.includes('interest rate')) return 'Interest Rate';
     return 'General';
   }
 
-  extractValues(description) {
+  extractValues(text) {
+    if (!text) return {};
     const values = {};
 
-    // Extract percentage values
-    const percentMatches = description.match(/([\d.]+)%/g);
+    const percentMatches = text.match(/([\d.]+)%/g);
     if (percentMatches) {
       const numbers = percentMatches.map(m => parseFloat(m.replace('%', '')));
       if (numbers.length >= 2) {
@@ -146,14 +150,12 @@ class AnnouncementScraper {
       }
     }
 
-    // Extract unit values
-    const unitMatches = description.match(/([\d,]+)\s*units/g);
+    const unitMatches = text.match(/([\d,]+)\s*units/g);
     if (unitMatches) {
       values.units = unitMatches.map(m => parseInt(m.replace(/,/g, '').replace(' units', '')));
     }
 
-    // Extract price values
-    const priceMatch = description.match(/Rs\.\s*([\d,]+)/);
+    const priceMatch = text.match(/Rs\.\s*([\d,]+)/);
     if (priceMatch) {
       values.price = parseFloat(priceMatch[1].replace(/,/g, ''));
     }
@@ -162,9 +164,15 @@ class AnnouncementScraper {
   }
 
   parseDate(dateStr) {
+    if (!dateStr) return null;
     try {
-      const date = new Date(dateStr);
-      return date.toISOString().split('T')[0];
+      const parts = dateStr.split('/');
+      if (parts.length === 3) {
+        // Assuming format MM/DD/YYYY
+        const date = new Date(parts[2], parts[0] - 1, parts[1]);
+        return date.toISOString().split('T')[0];
+      }
+      return null;
     } catch (e) {
       return null;
     }
